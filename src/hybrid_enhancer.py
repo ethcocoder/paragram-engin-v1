@@ -247,10 +247,12 @@ class DiffusionUNetBlock(nn.Module):
     """Slim U-Net block with time-step conditioning."""
     def __init__(self, in_ch, out_ch, time_dim):
         super().__init__()
-        self.conv1 = nn.Sequential(nn.GroupNorm(8, in_ch), nn.SiLU(),
+        groups_in = 8 if in_ch % 8 == 0 else (3 if in_ch % 3 == 0 else 1)
+        self.conv1 = nn.Sequential(nn.GroupNorm(groups_in, in_ch), nn.SiLU(),
                                    nn.Conv2d(in_ch, out_ch, 3, 1, 1))
         self.time_proj = nn.Sequential(nn.SiLU(), nn.Linear(time_dim, out_ch))
-        self.conv2 = nn.Sequential(nn.GroupNorm(8, out_ch), nn.SiLU(),
+        groups_out = 8 if out_ch % 8 == 0 else (3 if out_ch % 3 == 0 else 1)
+        self.conv2 = nn.Sequential(nn.GroupNorm(groups_out, out_ch), nn.SiLU(),
                                    nn.Conv2d(out_ch, out_ch, 3, 1, 1))
         self.skip  = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
@@ -413,7 +415,8 @@ class PatchDiscriminatorScale(nn.Module):
         def _block(ic, oc, stride=2, norm=True):
             layers = [nn.Conv2d(ic, oc, 4, stride, 1, bias=not norm)]
             if norm:
-                layers.append(nn.GroupNorm(min(8, oc), oc, eps=1e-4))
+                groups = 8 if oc % 8 == 0 else (3 if oc % 3 == 0 else 1)
+                layers.append(nn.GroupNorm(groups, oc, eps=1e-4))
             layers.append(nn.LeakyReLU(0.2, inplace=True))
             return layers
         self.model = nn.Sequential(
@@ -426,10 +429,11 @@ class PatchDiscriminatorScale(nn.Module):
 
     def forward(self, x):
         feats = []
-        for layer in self.model:
+        for layer in self.model[:-1]:
             x = layer(x)
             feats.append(x)
-        return feats   # last = prediction logits, rest = intermediate features
+        output = self.model[-1](x)
+        return feats, output
 
 
 class MultiScaleDiscriminator(nn.Module):
@@ -587,10 +591,10 @@ def train_hybrid(args):
             (ff1, ff2), (fg1, fg2) = netD(fused.detach())
 
             loss_D = 0.5 * (
-                criterion_gan(rf1[-1], torch.ones_like(rf1[-1]))  +
-                criterion_gan(ff1[-1], torch.zeros_like(ff1[-1])) +
-                criterion_gan(rg1[-1], torch.ones_like(rg1[-1]))  +
-                criterion_gan(fg1[-1], torch.zeros_like(fg1[-1]))
+                criterion_gan(rf2, torch.ones_like(rf2))  +
+                criterion_gan(ff2, torch.zeros_like(ff2)) +
+                criterion_gan(rg2, torch.ones_like(rg2))  +
+                criterion_gan(fg2, torch.zeros_like(fg2))
             )
             loss_D.backward()
             nn.utils.clip_grad_norm_(netD.parameters(), 0.5)
@@ -606,16 +610,16 @@ def train_hybrid(args):
 
             # 1. LSGAN adversarial
             loss_adv = 0.5 * (
-                criterion_gan(pf1[-1], torch.ones_like(pf1[-1])) +
-                criterion_gan(pg1[-1], torch.ones_like(pg1[-1]))
+                criterion_gan(pf2, torch.ones_like(pf2)) +
+                criterion_gan(pg2, torch.ones_like(pg2))
             )
 
             # 2. Feature matching (multi-scale)
             loss_fm = sum(
                 F.l1_loss(pf1[i], pr1[i].detach()) +
-                F.l1_loss(pf2[i], pr2[i].detach())
-                for i in range(len(pf1) - 1)
-            ) / max(1, len(pf1) - 1)
+                F.l1_loss(pg1[i], prg1[i].detach())
+                for i in range(len(pf1))
+            ) / max(1, len(pf1))
 
             # 3. Perceptual + Style
             loss_perc, loss_style = perc_style(fused, real_imgs)

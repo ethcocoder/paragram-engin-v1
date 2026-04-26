@@ -37,7 +37,7 @@ print("[✓] Team A structural foundation ready.")
 Pull **200 real HD photos** from the web and generate augmented variants. This creates a high-entropy dataset for handling real-world complexity.
 
 ```bash
-          !python src/generate_hd_samples.py --mode download --n 200 --res 512 --augments 2 --out ../hd_images
+!python src/generate_hd_samples.py --mode download --n 200 --res 512 --augments 2 --out hd_images
 ```
 ***Result**: 600 training images covering real-world diversity.
 
@@ -45,7 +45,7 @@ Pull **200 real HD photos** from the web and generate augmented variants. This c
 Use the **QVS probability manifold** to synthesize 200 images directly from Team A's latent space. Fully autonomous — no internet required.
 
 ```bash
-          !python src/generate_hd_samples.py --mode synth --n 200 --augments 1 --sender_path ../checkpoints/universal_genesis_core.pth --latent_channels 16 --out ../hd_images
+!python src/generate_hd_samples.py --mode synth --n 200 --augments 1 --sender_path checkpoints/universal_genesis_core.pth --latent_channels 16 --out hd_images
 ```
 ***Result**: 200 AI-synthesized images for pure latent space training.
 
@@ -53,7 +53,7 @@ Use the **QVS probability manifold** to synthesize 200 images directly from Team
 Combines real photos and AI-synthesized images. This is the "Gold Standard" for achieving sovereign-grade reconstruction.
 
 ```bash
-          !python src/generate_hd_samples.py --mode both --n 300 --res 512 --augments 2 --sender_path ../checkpoints/universal_genesis_core.pth --latent_channels 16 --out ../hd_images
+!python src/generate_hd_samples.py --mode both --n 300 --res 512 --augments 2 --sender_path checkpoints/universal_genesis_core.pth --latent_channels 16 --out hd_images
 ```
 ***Result**: ~1500 training files for absolute generalization capability.
 
@@ -63,7 +63,7 @@ Combines real photos and AI-synthesized images. This is the "Gold Standard" for 
 Launch the GAN + Diffusion hybrid training loop. This teaches Team B to hallucinate missing detail back into the 4-KB bottleneck.
 
 ```bash
-          !python src/hybrid_enhancer.py --mode train --sender_path ../checkpoints/universal_genesis_core.pth --enhancer_path ../checkpoints/sovereign_hybrid_enhancer.pth --data_dir ../hd_images --latent_channels 16 --gan_nf 64 --gan_nb 12 --diff_base_ch 48 --epochs 30 --batch_size 4
+!python src/hybrid_enhancer.py --mode train --sender_path checkpoints/universal_genesis_core.pth --enhancer_path checkpoints/sovereign_hybrid_enhancer.pth --data_dir hd_images --latent_channels 16 --gan_nf 64 --gan_nb 12 --diff_base_ch 48 --epochs 30 --batch_size 4
 ```
 
 ---
@@ -72,7 +72,7 @@ Launch the GAN + Diffusion hybrid training loop. This teaches Team B to hallucin
 Run the demo to prove the model can reconstruct sharp, retina-grade images from the latent memory.
 
 ```bash
-          !python src/hybrid_enhancer.py --mode demo --sender_path ../checkpoints/universal_genesis_core.pth --enhancer_path ../checkpoints/sovereign_hybrid_enhancer.pth --latent_channels 16 --T_inf 4
+!python src/hybrid_enhancer.py --mode demo --sender_path checkpoints/universal_genesis_core.pth --enhancer_path checkpoints/sovereign_hybrid_enhancer.pth --latent_channels 16 --T_inf 4
 ```
 
 ---
