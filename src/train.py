@@ -108,74 +108,120 @@ def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
     return total, l1_l, ssim_l, perc_l, kld_l
 
 
+from model import LatentGenesisCore, EliteDiscriminator
+
+# ── Master Compression Loss ──────────────────────────────────────────────────
+
+def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
+    l1_l   = F.l1_loss(recon_x, x)
+    ssim_l = ssim_loss(recon_x, x)
+    
+    logvar_c = torch.clamp(logvar, -10, 10)
+    kld_l  = -0.5 * torch.mean(1 + logvar_c - mu.pow(2) - logvar_c.exp())
+    
+    perc_l = torch.tensor(0.0, device=x.device)
+    if perc_model is not None:
+        perc_l = perc_model(recon_x, x)
+
+    # Elite Balance: L1 (1.0) + SSIM (0.5) + PERC (0.1) + KLD
+    total = l1_l + (0.5 * ssim_l) + (0.1 * perc_l) + (kld_weight * kld_l)
+    return total, l1_l, ssim_l, perc_l, kld_l
+
+
 # ── Training Loop ─────────────────────────────────────────────────────────────
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log.info("[*] Paradox Universal Master: Initiating 'World Pattern' Learning on %s", device)
+    log.info("[*] Paradox MONSTER Engine: Initiating Adversarial Phase on %s", device)
 
     torch.backends.cudnn.benchmark = True
 
-    # 1. Universal Data Loader (Sampled for Speed)
+    # 1. Universal Data Loader
     trainloader, testloader = get_dataloaders(
         batch_size=args.batch_size, root="./data", num_workers=2,
         pin_memory=(device.type == "cuda"), use_hd=args.use_hd,
         sample_limit=args.sample_limit
     )
 
-    # 2. Elite 16-channel Core
-    model = LatentGenesisCore(latent_channels=args.latent_channels).to(device)
+    # 2. VAE-GAN Core
+    model = LatentGenesisCore(latent_channels=args.latent_channels, device=str(device)).to(device)
+    discriminator = EliteDiscriminator().to(device)
     perc_model = PerceptualLoss().to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    # 3. Dual Optimizers (Generator & Discriminator)
+    opt_g = optim.AdamW(model.parameters(), lr=args.lr, betas=(0.5, 0.9))
+    opt_d = optim.AdamW(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.9))
+    
+    scheduler_g = optim.lr_scheduler.CosineAnnealingLR(opt_g, T_max=args.epochs)
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
-    best_val_loss = float("inf")
 
     for epoch in range(args.epochs):
-        # Universal KLD ramp
         kld_weight = min(1.0, epoch / max(1, args.epochs // 2)) * 0.001
         
         model.train()
-        running_loss = 0.0
+        discriminator.train()
         pbar = tqdm(trainloader, desc=f"Epoch {epoch + 1}/{args.epochs}", leave=True)
 
         for images, _ in pbar:
             images = images.to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
+            
+            # --- 🚀 Phase 1: Train Discriminator ---
+            opt_d.zero_grad(set_to_none=True)
+            
+            # Real images
+            d_real = discriminator(images)
+            loss_d_real = F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real))
+            
+            # Fake images
+            recon, mu, logvar = model(images)
+            d_fake = discriminator(recon.detach())
+            loss_d_fake = F.binary_cross_entropy_with_logits(d_fake, torch.zeros_like(d_fake))
+            
+            loss_d = (loss_d_real + loss_d_fake) * 0.5
+            loss_d.backward()
+            opt_d.step()
 
-            outputs, mu, logvar = model(images)
-            loss, l1_l, ssim_l, perc_l, kld_l = compression_loss(
-                outputs, images, mu, logvar, kld_weight, perc_model
+            # --- 🎨 Phase 2: Train Generator (VAE-GAN) ---
+            opt_g.zero_grad(set_to_none=True)
+            
+            # Reconstruction Loss
+            loss_rec, l1_l, ssim_l, perc_l, kld_l = compression_loss(
+                recon, images, mu, logvar, kld_weight, perc_model
             )
             
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            # Adversarial Loss (Target: Fool the Discriminator)
+            d_fake_g = discriminator(recon)
+            loss_adv = F.binary_cross_entropy_with_logits(d_fake_g, torch.ones_like(d_fake_g))
             
-            running_loss += loss.item()
-            pbar.set_postfix(loss=f"{loss.item():.4f}", ssim=f"{ssim_l.item():.4f}", perc=f"{perc_l.item():.4f}")
+            # Total MONSTER Loss (G)
+            # GAN Weight is 0.05 to preserve signal integrity while adding texture
+            loss_g = loss_rec + (0.05 * loss_adv)
+            
+            loss_g.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            opt_g.step()
+            
+            pbar.set_postfix(G=f"{loss_g.item():.4f}", D=f"{loss_d.item():.4f}", ssim=f"{ssim_l.item():.4f}")
 
-        scheduler.step()
-        epoch_loss = running_loss / len(trainloader)
-        log.info(f"[*] Epoch {epoch+1} Completed. Master Loss: {epoch_loss:.4f}")
-
-        # Save Universal Core
+        scheduler_g.step()
+        
+        # Save Elite Universal Core
         if (epoch + 1) % 5 == 0:
             torch.save({
                 'model_state_dict': model.state_dict(),
+                'disc_state_dict': discriminator.state_dict(),
                 'latent_channels': args.latent_channels,
             }, os.path.join(args.checkpoint_dir, 'universal_genesis_core.pth'))
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Paradox Master Training")
-    parser.add_argument("--batch_size", type=int, default=16) # Optimized for T4 VRAM
+    parser = argparse.ArgumentParser(description="Paradox Monster Training")
+    parser.add_argument("--batch_size", type=int, default=12) # Reduced for GAN VRAM
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=2e-4) # Lowered for ELITE stability
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--latent_channels", type=int, default=16)
-    parser.add_argument("--sample_limit", type=int, default=5000) # Speed/GENERALIZATION balance
+    parser.add_argument("--sample_limit", type=int, default=10000)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
-    parser.add_argument("--use_hd", type=bool, default=True) # Always HD-Ready patterns
+    parser.add_argument("--use_hd", type=bool, default=True)
     args = parser.parse_args()
     train(args)

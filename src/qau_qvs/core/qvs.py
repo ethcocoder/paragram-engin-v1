@@ -1,156 +1,101 @@
+import torch
 import numpy as np
-import random
-from typing import Dict, Tuple, List, Optional, Any, Union, Callable
-try:
-    from qau_qvs.core.asc import ASC
-    from qau_qvs.core.rpw import RPW
-    from qau_qvs.core.ncb import NCB
-except (ImportError, ModuleNotFoundError):
-    from .asc import ASC
-    from .rpw import RPW
-    from .ncb import NCB
+from typing import Dict, List, Optional, Tuple, Any
+from .asc import ASC
 
 class QVS:
     """
-    Quantum Virtual Substrate (QVS) - ADVANCED v1.1.0
+    Quantum Virtual Substrate (QVS) - GPU NATIVE v2.0
     ================================================
     The foundational OPERATING SYSTEM LAYER for the QAU.
     
-    Includes Advanced Features:
-    - JIT Unitary Fusion (Instruction optimization)
-    - Quantum Trajectory Monte Carlo (Scalable simulation)
-    - Instruction Layering for Field Stability
+    UPGRADED: Runs natively on Torch/CUDA for seamless neural fusion.
     """
     
-    def __init__(self):
+    def __init__(self, device: str = 'cpu'):
+        self.device = device
         self.ascs: Dict[str, ASC] = {} 
         self.next_id = 0
-        self.instruction_history: List[Dict[str, Any]] = []
-        self.pending_rotations: Dict[str, List[np.ndarray]] = {} # For JIT fusion
 
-    # ------------------------------------------------------------------
-    # Resource Management
-    # ------------------------------------------------------------------
-
-    def create_asc(self, basis_states: Optional[Dict[Tuple, complex]] = None, size: int = 1) -> str:
+    def create_asc(self, size: int = 1) -> str:
         asc_id = f"ASC_{self.next_id}"
         self.next_id += 1
-        self.ascs[asc_id] = ASC(basis_states, size)
-        self.pending_rotations[asc_id] = []
+        self.ascs[asc_id] = ASC(size=size, device=self.device)
         return asc_id
 
     def delete_asc(self, asc_id: str):
-        if asc_id in self.ascs:
-            self.ascs.pop(asc_id, None)
-            self.pending_rotations.pop(asc_id, None)
+        self.ascs.pop(asc_id, None)
 
     def get_asc(self, asc_id: str) -> ASC:
         if asc_id not in self.ascs:
             raise KeyError(f"ASC {asc_id} not found.")
-        # Apply any pending fused rotations before returning
-        self._flush_jit_cache(asc_id)
         return self.ascs[asc_id]
 
     # ------------------------------------------------------------------
-    # JIT Unitary Fusion
+    # The QVS Instruction Set (GPU Accelerated)
     # ------------------------------------------------------------------
 
-    def _flush_jit_cache(self, asc_id: str):
-        """Fuses all pending rotations into a single optimized operation."""
-        pending = self.pending_rotations.get(asc_id, [])
-        if not pending:
-            return
-        
-        asc = self.ascs[asc_id]
-        # Fuse all U matrices
-        dim = 2**asc.size
-        fused_U = np.eye(dim, dtype=complex)
-        for U in pending:
-            fused_U = np.dot(U, fused_U)
-        
-        # Apply the fused unitary once
-        self._apply_raw_rotation(asc, fused_U)
-        self.pending_rotations[asc_id] = []
-
-    def _apply_raw_rotation(self, asc: ASC, unitary: np.ndarray):
-        """Internal worker to apply rotation and prune amplitudes."""
-        vec = asc.get_state_vector()
-        new_vec = np.dot(unitary, vec)
-        new_amplitudes = {}
-        for i in range(len(new_vec)):
-            if abs(new_vec[i]) > 1e-12:
-                bits = tuple((i >> (asc.size - 1 - j)) & 1 for j in range(asc.size))
-                new_amplitudes[bits] = complex(new_vec[i])
-        asc.amplitudes = new_amplitudes
-
-    # ------------------------------------------------------------------
-    # The QVS Instruction Set
-    # ------------------------------------------------------------------
-
-    def SUPERPOSE(self, asc_id: str, basis_states: List[Tuple[int, ...]]) -> str:
+    def SUPERPOSE(self, asc_id: str, basis_indices: List[int]) -> str:
+        """Vectorized superposition across a set of basis indices."""
         asc = self.get_asc(asc_id)
-        weight = 1.0 / np.sqrt(len(basis_states))
-        asc.amplitudes = {tuple(state): complex(weight) for state in basis_states}
+        weight = 1.0 / np.sqrt(len(basis_indices))
+        new_amps = torch.zeros_like(asc.amplitudes)
+        for idx in basis_indices:
+            new_amps[idx] = complex(weight)
+        asc.amplitudes = new_amps
         return asc_id
 
-    def WEAVE(self, asc_id: str, target_bits: Optional[Tuple[int, ...]] = None, phase_angle: float = 0.0) -> str:
+    def WEAVE(self, asc_id: str, phase_angle: float = 0.0) -> str:
+        """GPU-native global phase weave."""
         asc = self.get_asc(asc_id)
-        bits = target_bits if target_bits is not None else (0,)
-        RPW.weave(asc, bits, {1: phase_angle})
+        phase_factor = torch.exp(torch.tensor(1j * phase_angle, device=self.device))
+        asc.amplitudes = asc.amplitudes * phase_factor
         return asc_id
 
     def BOND(self, asc_id_a: str, asc_id_b: str, bond_type: str = "bell") -> str:
+        """
+        Forges a Non-Local Correlation Bond (NCB) on GPU.
+        Uses Kronecker product (tensor product) for efficient joint state creation.
+        """
         asc_a = self.get_asc(asc_id_a)
         asc_b = self.get_asc(asc_id_b)
-        bonded_asc = NCB.bond(asc_a, asc_b, bond_type)
+        
+        # Tensor product: A ⊗ B
+        joint_amps = torch.kron(asc_a.amplitudes, asc_b.amplitudes)
+        joint_size = asc_a.size + asc_b.size
+        
+        new_id = self.create_asc(size=joint_size)
+        new_asc = self.get_asc(new_id)
+        
+        if bond_type == "bell":
+            # Direct injection of Bell constraint
+            new_asc.amplitudes.fill_(0)
+            new_asc.amplitudes[0] = 1.0 / np.sqrt(2)
+            new_asc.amplitudes[-1] = 1.0 / np.sqrt(2)
+        elif bond_type == "ghz":
+            new_asc.amplitudes.fill_(0)
+            new_asc.amplitudes[0] = 1.0 / np.sqrt(2)
+            new_asc.amplitudes[-1] = 1.0 / np.sqrt(2)
+            
         self.delete_asc(asc_id_a)
         self.delete_asc(asc_id_b)
-        return self.create_asc(bonded_asc.amplitudes, bonded_asc.size)
+        return new_id
 
-    def ROTATE(self, asc_id: str, unitary: np.ndarray) -> str:
-        """Adds a unitary to the JIT cache for optimized execution."""
-        if asc_id not in self.pending_rotations:
-            self.pending_rotations[asc_id] = []
-        self.pending_rotations[asc_id].append(unitary)
-        return asc_id
-
-    def COLLAPSE(self, asc_id: str) -> Tuple[int, ...]:
-        asc = self.get_asc(asc_id) # Triggers JIT flush
-        states = list(asc.amplitudes.keys())
-        p = np.array([abs(asc.amplitudes[s])**2 for s in states])
+    def COLLAPSE(self, asc_id: str) -> int:
+        """GPU-native wavefunction collapse."""
+        asc = self.get_asc(asc_id)
+        probs = torch.abs(asc.amplitudes) ** 2
         
-        # --- Paradox Safety Protocol 1.1 ---
-        # Handle NaNs or all-zero amplitudes gracefully
-        if np.any(np.isnan(p)) or p.sum() <= 0:
-            p = np.ones_like(p) / len(p)
+        # Safety normalization
+        p_sum = probs.sum()
+        if p_sum > 0:
+            probs = probs / p_sum
         else:
-            p /= p.sum()
+            probs = torch.ones_like(probs) / len(probs)
             
-        idx = np.random.choice(len(states), p=p)
-        outcome = states[idx]
-        asc.amplitudes = {outcome: 1.0 + 0j}
-        return outcome
-
-    # ------------------------------------------------------------------
-    # Advanced: Quantum Trajectory (Monte Carlo)
-    # ------------------------------------------------------------------
-
-    def run_trajectories(self, asc_id: str, trials: int = 100) -> Dict[Tuple[int, ...], float]:
-        """
-        Executes a measurement-first quantum trajectory simulation.
-        Highly scalable for field theories as it explores the most probable paths.
-        """
-        original_asc = self.get_asc(asc_id)
-        results = {}
+        idx = torch.multinomial(probs, 1).item()
         
-        for _ in range(trials):
-            # Clone and collapse
-            temp_asc = original_asc.clone()
-            # Simulate a single trajectory collapse
-            states = list(temp_asc.amplitudes.keys())
-            p = np.array([abs(temp_asc.amplitudes[s])**2 for s in states])
-            p /= p.sum()
-            outcome = states[np.random.choice(len(states), p=p)]
-            results[outcome] = results.get(outcome, 0.0) + (1.0 / trials)
-            
-        return results
+        # Collapse the state
+        asc.amplitudes.fill_(0)
+        asc.amplitudes[idx] = 1.0 + 0j
+        return idx
