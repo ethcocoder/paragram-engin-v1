@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from data import get_dataloaders
 from model import LatentGenesisCore, EliteDiscriminator, HaarWaveletTransform
+from model import LatentGenesisCore, EliteDiscriminator, HaarWaveletTransform
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
@@ -33,7 +34,9 @@ log = logging.getLogger(__name__)
 
 
 # ── Quantum Wavelet Matching (QWM) ───────────────────────────────────────────
+# ── Quantum Wavelet Matching (QWM) ───────────────────────────────────────────
 
+class QuantumWaveletLoss(nn.Module):
 class QuantumWaveletLoss(nn.Module):
     """
     Novel FRL (Frequency-Resonance Learning).
@@ -41,7 +44,9 @@ class QuantumWaveletLoss(nn.Module):
     FIXED: Correct channel slicing to prevent color-cross-contamination.
     """
     def __init__(self, channels=3):
+    def __init__(self, channels=3):
         super().__init__()
+        self.wavelet = HaarWaveletTransform(channels)
         self.wavelet = HaarWaveletTransform(channels)
         for param in self.parameters():
             param.requires_grad = False
@@ -99,6 +104,9 @@ def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, qwm_model=None):
     logvar_c = torch.clamp(logvar, -10, 10)
     kld_l  = -0.5 * torch.mean(1 + logvar_c - mu.pow(2) - logvar_c.exp())
     
+    qwm_l = torch.tensor(0.0, device=x.device)
+    if qwm_model is not None:
+        qwm_l = qwm_model(recon_x, x)
     qwm_l = torch.tensor(0.0, device=x.device)
     if qwm_model is not None:
         qwm_l = qwm_model(recon_x, x)
@@ -166,6 +174,8 @@ def train(args):
             opt_g.zero_grad(set_to_none=True)
             
             # Reconstruction Loss
+            loss_rec, l1_l, ssim_l, qwm_l, kld_l = compression_loss(
+                recon, images, mu, logvar, kld_weight, qwm_model
             loss_rec, l1_l, ssim_l, qwm_l, kld_l = compression_loss(
                 recon, images, mu, logvar, kld_weight, qwm_model
             )

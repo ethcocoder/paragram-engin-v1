@@ -73,22 +73,30 @@ def decode_from_paradox(filepath):
 def run_elite_demo(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     hw = get_hardware_info()
-    print(f"\n{'='*60}\n[*] PARADOX ELITE DEMO | HW: {hw['GPU']} | VRAM: {hw['VRAM']}\n{'='*60}")
+    print(f"\n{'='*70}\n[*] PARADOX ELITE ENGINE | SINGLE IMAGE AUDIT\n{'='*70}")
+    print(f"[HW] GPU: {hw['GPU']} | VRAM: {hw['VRAM']}")
 
+    # 1. Load Model
     model = LatentGenesisCore(latent_channels=args.latent_channels, device=str(device)).to(device)
     if os.path.exists(args.model_path):
         checkpoint = torch.load(args.model_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
+    # 2. Prepare Sample
     if args.image_path and os.path.exists(args.image_path):
-        img = Image.open(args.image_path).convert('RGB')
+        img_raw = Image.open(args.image_path).convert('RGB')
     else:
         seed = random.randint(0, 1000000)
         url = f"https://picsum.photos/seed/{seed}/1024/1024"
-        print(f"[*] Fetching random 1024x1024 Master Sample...")
+        print(f"[*] Fetching 1024x1024 Master Sample (Lorem Picsum)...")
         urllib.request.urlretrieve(url, "master_sample.jpg")
-        img = Image.open("master_sample.jpg")
+        img_raw = Image.open("master_sample.jpg")
+
+    # 128px Safety Protocol: Enforce minimum 256px to prevent latent collapse
+    safe_size = max(args.size, 256)
+    if args.size < 256:
+        print(f"[!] Safety Net Activated: Upscaling from {args.size}px to 256px.")
 
     # 128px Safety Protocol: Enforce minimum 256px to prevent latent collapse
     safe_size = max(args.size, 256)
@@ -100,30 +108,73 @@ def run_elite_demo(args):
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
-    input_tensor = transform(img).unsqueeze(0).to(device)
+    input_tensor = transform(img_raw).unsqueeze(0).to(device)
 
-    start_time = time.time()
+    # 3. Encoding Phase
+    t0 = time.time()
     with torch.no_grad():
         mu, _ = model.encoder(input_tensor)
         z_q = model.quantizer(mu)
-    encode_time = (time.time() - start_time) * 1000
+    encode_time = (time.time() - t0) * 1000
     
     meta = {'channels': args.latent_channels, 'h': z_q.shape[2], 'w': z_q.shape[3]}
     paradox_size = encode_to_paradox(z_q, "output.paradox", meta)
     
-    start_time = time.time()
+    # 4. Decoding Phase (From .paradox file)
+    t1 = time.time()
     with torch.no_grad():
         latent_restored = decode_from_paradox("output.paradox").to(device)
         reconstructed = model.decoder(latent_restored)
-    decode_time = (time.time() - start_time) * 1000
+    decode_time = (time.time() - t1) * 1000
 
-    psnr_val = 20 * torch.log10(1.0 / torch.sqrt(torch.mean((input_tensor - reconstructed) ** 2))).item()
-    print(f"[*] PSNR: {psnr_val:.2f} dB | Latency: {encode_time+decode_time:.1f}ms | Profit: {(args.size*args.size*3)/paradox_size:.1f}X")
+    # 5. Elite Metric Calculations
+    # PSNR
+    mse = torch.mean((input_tensor - reconstructed) ** 2).item()
+    psnr_val = 20 * np.log10(1.0 / np.sqrt(mse)) if mse > 0 else 100
+    
+    # Simple SSIM Approximation (Structural Correlation)
+    from train import ssim_loss
+    ssim_val = 1.0 - ssim_loss(input_tensor, reconstructed).item()
+    
+    # BPP (Bits Per Pixel)
+    total_pixels = args.size * args.size
+    bpp = (paradox_size * 8) / total_pixels
+    profit = (total_pixels * 3 * 8) / (paradox_size * 8) # Uncompressed vs Paradox
 
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1); plt.imshow(input_tensor[0].cpu().permute(1,2,0)*0.5+0.5); plt.title("Original"); plt.axis('off')
-    plt.subplot(1, 2, 2); plt.imshow(reconstructed[0].cpu().permute(1,2,0)*0.5+0.5); plt.title("Paradox Reconstruction"); plt.axis('off')
-    plt.savefig('elite_codec_result.png'); print("[*] Result saved to elite_codec_result.png")
+    print(f"\n[METRICS]")
+    print(f" -> PSNR: {psnr_val:.2f} dB")
+    print(f" -> SSIM: {ssim_val:.4f}")
+    print(f" -> MSE:  {mse:.6f}")
+    print(f" -> BPP:  {bpp:.4f} bits/pixel")
+    print(f" -> PROFIT: {profit:.1f}X (Compression)")
+
+    print(f"\n[LATENCY]")
+    print(f" -> Encoder: {encode_time:.1f}ms")
+    print(f" -> Decoder: {decode_time:.1f}ms")
+    print(f" -> TOTAL:   {encode_time + decode_time:.1f}ms")
+
+    # 6. High-Resolution Output
+    # Save Standalone Reconstructed Image (High Quality PNG)
+    recon_img = reconstructed[0].cpu().permute(1, 2, 0) * 0.5 + 0.5
+    recon_img = (recon_img.clamp(0, 1).numpy() * 255).astype(np.uint8)
+    Image.fromarray(recon_img).save('paradox_high_res.png')
+    print(f"\n[*] SUCCESS: Standalone HD result saved to 'paradox_high_res.png'")
+
+    # Save Comparison Dashboard
+    plt.figure(figsize=(16, 8))
+    plt.subplot(1, 2, 1)
+    plt.imshow(input_tensor[0].cpu().permute(1,2,0)*0.5+0.5)
+    plt.title(f"Original ({args.size}px)")
+    plt.axis('off')
+    
+    plt.subplot(1, 2, 2)
+    plt.imshow(recon_img)
+    plt.title(f"Paradox Reconstruction\nPSNR: {psnr_val:.2f}dB | BPP: {bpp:.3f}")
+    plt.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('paradox_elite_dashboard.png')
+    print(f"[*] Comparison dashboard saved to 'paradox_elite_dashboard.png'")
 
 # ── Elite Batch Engine ───────────────────────────────────────────────────────
 
