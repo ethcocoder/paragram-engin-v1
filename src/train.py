@@ -25,7 +25,7 @@ import torchvision.models as models
 from tqdm import tqdm
 
 from data import get_dataloaders
-from model import LatentGenesisCore
+from model import LatentGenesisCore, EliteDiscriminator
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
@@ -95,7 +95,7 @@ def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
     ssim_l = ssim_loss(recon_x, x)
     
     # --- Paradox Safety Protocol 1.1 ---
-    # Clamp logvar to prevent KLD explosion (e^10 is ~22k, enough for variance)
+    # Clamp logvar to prevent KLD explosion
     logvar_c = torch.clamp(logvar, -10, 10)
     kld_l  = -0.5 * torch.mean(1 + logvar_c - mu.pow(2) - logvar_c.exp())
     
@@ -103,28 +103,8 @@ def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
     if perc_model is not None:
         perc_l = perc_model(recon_x, x)
 
-    # Balanced weight for universal Generalization
-    total = l1_l + (0.5 * ssim_l) + (0.1 * perc_l) + (kld_weight * kld_l)
-    return total, l1_l, ssim_l, perc_l, kld_l
-
-
-from model import LatentGenesisCore, EliteDiscriminator
-
-# ── Master Compression Loss ──────────────────────────────────────────────────
-
-def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
-    l1_l   = F.l1_loss(recon_x, x)
-    ssim_l = ssim_loss(recon_x, x)
-    
-    logvar_c = torch.clamp(logvar, -10, 10)
-    kld_l  = -0.5 * torch.mean(1 + logvar_c - mu.pow(2) - logvar_c.exp())
-    
-    perc_l = torch.tensor(0.0, device=x.device)
-    if perc_model is not None:
-        perc_l = perc_model(recon_x, x)
-
-    # Elite Balance: L1 (1.0) + SSIM (0.5) + PERC (0.1) + KLD
-    total = l1_l + (0.5 * ssim_l) + (0.1 * perc_l) + (kld_weight * kld_l)
+    # Elite Balance: L1 (1.0) + SSIM (0.7) + PERC (0.1) + KLD
+    total = l1_l + (0.7 * ssim_l) + (0.1 * perc_l) + (kld_weight * kld_l)
     return total, l1_l, ssim_l, perc_l, kld_l
 
 
@@ -202,7 +182,9 @@ def train(args):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt_g.step()
             
-            pbar.set_postfix(G=f"{loss_g.item():.4f}", D=f"{loss_d.item():.4f}", ssim=f"{ssim_l.item():.4f}")
+            # Report actual SSIM (higher is better) for clarity
+            actual_ssim = 1.0 - ssim_l.item()
+            pbar.set_postfix(G=f"{loss_g.item():.4f}", D=f"{loss_d.item():.4f}", ssim=f"{actual_ssim:.4f}")
 
         scheduler_g.step()
         

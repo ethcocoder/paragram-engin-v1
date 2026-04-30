@@ -19,6 +19,7 @@ Trains on **100,000 STL-10 patterns** using an Adversarial Duel. The model learn
 
 ```bash
 !python src/train.py --epochs 100 --batch_size 12 --sample_limit 10000 --latent_channels 16
+python src/train.py --epochs 10 --batch_size 12 --sample_limit 3000 --latent_channels 16
 ```
 ***Result**: `universal_genesis_core.pth` (The Intelligent Brain).
 

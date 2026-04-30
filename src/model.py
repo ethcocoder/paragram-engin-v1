@@ -327,22 +327,25 @@ class LatentGenesisCore(nn.Module):
         self, mu: torch.Tensor, logvar: torch.Tensor
     ) -> torch.Tensor:
         """
-        UPGRADED: GPU-Native Multi-Channel Phase Modulation.
+        UPGRADED: Vectorized GPU-Native Phase Modulation.
+        Eliminated the batch loop for massive training speedup.
         """
-        batch_size = mu.shape[0]
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
 
         if self.training:
-            for b in range(batch_size):
-                energy = torch.mean(mu[b]).item()
-                asc_id = self.qvs.create_asc(size=2)
-                self.qvs.SUPERPOSE(asc_id, [0, 3])
-                self.qvs.WEAVE(asc_id, phase_angle=energy * np.pi)
-                outcome = self.qvs.COLLAPSE(asc_id)
-                bias = 1.0 if outcome % 2 == 0 else -1.0
-                eps[b] *= bias
-                self.qvs.delete_asc(asc_id)
+            # Vectorized Quantum Logic
+            # We calculate a per-batch-item energy bias using the mean of mu
+            energy = torch.mean(mu, dim=(1, 2, 3)) # (B,)
+            
+            # Simulate the "Collapse" outcome across the entire batch
+            # Logic: If energy > 0, bias is more likely to be 1, else -1
+            # Using a simplified vectorized version of the QVS logic
+            probs = torch.sigmoid(energy) # Map energy to probability [0, 1]
+            outcomes = torch.bernoulli(probs) 
+            bias = (outcomes * 2 - 1).view(-1, 1, 1, 1) # (B, 1, 1, 1)
+            
+            eps = eps * bias
         else:
             eps *= 0.1
 

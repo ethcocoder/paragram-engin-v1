@@ -35,20 +35,35 @@ def get_hardware_info():
 
 # ── .paradox Codec Logic ─────────────────────────────────────────────────────
 
+import gzip
+
 def encode_to_paradox(latent_tensor, filepath, metadata):
+    # Quantize to int16 for storage
     latent_np = (latent_tensor.cpu().numpy() * 32767).astype(np.int16)
-    with open(filepath, 'wb') as f:
-        f.write(b'PARADOX!')
-        f.write(np.array([metadata['channels'], metadata['h'], metadata['w']], dtype=np.int32).tobytes())
-        f.write(latent_np.tobytes())
+    
+    # Binary Payload: [Channels (4b), H (4b), W (4b), LatentData (Variable)]
+    header = np.array([metadata['channels'], metadata['h'], metadata['w']], dtype=np.int32).tobytes()
+    payload = latent_np.tobytes()
+    
+    with gzip.open(filepath, 'wb') as f:
+        f.write(b'PDX-v2!') # Paradox v2 (Compressed)
+        f.write(header)
+        f.write(payload)
+        
     return os.path.getsize(filepath)
 
 def decode_from_paradox(filepath):
-    with open(filepath, 'rb') as f:
-        magic = f.read(8)
-        if magic != b'PARADOX!': raise ValueError("Invalid .paradox file")
+    with gzip.open(filepath, 'rb') as f:
+        magic = f.read(7)
+        if magic != b'PDX-v2!': 
+            # Fallback for old version or error
+            if magic[:8] == b'PARADOX!':
+                raise ValueError("Old .paradox v1 detected. Use legacy decoder.")
+            raise ValueError("Invalid .paradox file or corruption.")
+            
         meta = np.frombuffer(f.read(12), dtype=np.int32)
         latent_np = np.frombuffer(f.read(), dtype=np.int16)
+        
     latent_tensor = torch.from_numpy(latent_np.astype(np.float32) / 32767.0)
     latent_tensor = latent_tensor.view(1, meta[0], meta[1], meta[2])
     return latent_tensor
