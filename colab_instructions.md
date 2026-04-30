@@ -48,6 +48,8 @@ Test a single high-resolution image and produce a physical **.paradox** binary f
 ```bash
 !python src/demo_hd.py --size 1024 --image_path test_local/johan.png
 ```
+bash
+python src/demo_hd.py --size 1024 --image_path test_local/johan.png
 
 ---
 

@@ -107,10 +107,14 @@ class ResBlock(nn.Module):
     def __init__(self, channels: int) -> None:
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            # Depthwise Separable Conv 1
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=channels, bias=False),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
             nn.GroupNorm(min(32, channels//4), channels),
             nn.GELU(),
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            # Depthwise Separable Conv 2
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=channels, bias=False),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
             nn.GroupNorm(min(32, channels//4), channels),
         )
         self.attn = EliteAttention(channels)

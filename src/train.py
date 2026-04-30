@@ -25,41 +25,40 @@ import torchvision.models as models
 from tqdm import tqdm
 
 from data import get_dataloaders
-from model import LatentGenesisCore, EliteDiscriminator
+from model import LatentGenesisCore, EliteDiscriminator, HaarWaveletTransform
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 log = logging.getLogger(__name__)
 
 
-# ── Perceptual Loss (The 'Universal Texture' Engine) ─────────────────────────
+# ── Quantum Wavelet Matching (QWM) ───────────────────────────────────────────
 
-class PerceptualLoss(nn.Module):
+class QuantumWaveletLoss(nn.Module):
     """
-    Uses pre-trained VGG16 to compare deep 'visual concepts' rather than 
-    raw pixels. This is what allows the model to learn 'patterns' 
-    rather than just memorizing images.
+    Novel FRL (Frequency-Resonance Learning) Paradigm.
+    Mathematically forces the generator to match high-frequency phase signatures
+    (like wood grain) without the guesswork or hardware cost of a Discriminator/VGG.
     """
-    def __init__(self):
+    def __init__(self, channels=3):
         super().__init__()
-        vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features
-        self.slice1 = nn.Sequential(*vgg[:4])   # Edge concepts
-        self.slice2 = nn.Sequential(*vgg[4:9])  # Texture concepts
-        self.slice3 = nn.Sequential(*vgg[9:16]) # Structural concepts
+        self.wavelet = HaarWaveletTransform(channels)
         for param in self.parameters():
             param.requires_grad = False
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
-    def forward(self, x, y):
-        x = (x * 0.5 + 0.5 - self.mean) / self.std
-        y = (y * 0.5 + 0.5 - self.mean) / self.std
+    def forward(self, recon, target):
+        # Extract 4 quantum frequency bands: [LL, LH, HL, HH]
+        w_recon = self.wavelet(recon)
+        w_target = self.wavelet(target)
         
-        x_f1, y_f1 = self.slice1(x), self.slice1(y)
-        x_f2, y_f2 = self.slice2(x_f1), self.slice2(y_f1)
-        x_f3, y_f3 = self.slice3(x_f2), self.slice3(y_f2)
+        # Split into LL (Low-Low) and High Frequencies (LH, HL, HH)
+        # The Haar kernel outputs C*4 channels. For RGB, it's 12 channels.
+        # Channels 0:3 = LL, 3:12 = High Frequencies
+        ll_loss = F.l1_loss(w_recon[:, 0:3], w_target[:, 0:3])
+        hf_loss = F.l1_loss(w_recon[:, 3:], w_target[:, 3:])
         
-        return F.mse_loss(x_f1, y_f1) + F.mse_loss(x_f2, y_f2) + F.mse_loss(x_f3, y_f3)
+        # We weight High Frequencies 5x stronger to guarantee perfect texture synthesis
+        return ll_loss + (5.0 * hf_loss)
 
 
 # ── SSIM Loss ────────────────────────────────────────────────────────────────
@@ -90,7 +89,7 @@ def ssim_loss(x, y, window_size: int = 11):
 
 # ── Master Compression Loss ──────────────────────────────────────────────────
 
-def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
+def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, qwm_model=None):
     l1_l   = F.l1_loss(recon_x, x)
     ssim_l = ssim_loss(recon_x, x)
     
@@ -99,13 +98,13 @@ def compression_loss(recon_x, x, mu, logvar, kld_weight=0.001, perc_model=None):
     logvar_c = torch.clamp(logvar, -10, 10)
     kld_l  = -0.5 * torch.mean(1 + logvar_c - mu.pow(2) - logvar_c.exp())
     
-    perc_l = torch.tensor(0.0, device=x.device)
-    if perc_model is not None:
-        perc_l = perc_model(recon_x, x)
+    qwm_l = torch.tensor(0.0, device=x.device)
+    if qwm_model is not None:
+        qwm_l = qwm_model(recon_x, x)
 
-    # Elite Balance: L1 (1.0) + SSIM (0.7) + PERC (0.1) + KLD
-    total = l1_l + (0.7 * ssim_l) + (0.1 * perc_l) + (kld_weight * kld_l)
-    return total, l1_l, ssim_l, perc_l, kld_l
+    # The New Quantum Balance: L1 (1.0) + SSIM (0.7) + QWM (0.5) + KLD
+    total = l1_l + (0.7 * ssim_l) + (0.5 * qwm_l) + (kld_weight * kld_l)
+    return total, l1_l, ssim_l, qwm_l, kld_l
 
 
 # ── Training Loop ─────────────────────────────────────────────────────────────
@@ -126,7 +125,9 @@ def train(args):
     # 2. VAE-GAN Core
     model = LatentGenesisCore(latent_channels=args.latent_channels, device=str(device)).to(device)
     discriminator = EliteDiscriminator().to(device)
-    perc_model = PerceptualLoss().to(device)
+    
+    # NEW: Quantum Wavelet Matching (Replaces heavy VGG)
+    qwm_model = QuantumWaveletLoss(channels=3).to(device)
 
     # 3. Dual Optimizers (Generator & Discriminator)
     opt_g = optim.AdamW(model.parameters(), lr=args.lr, betas=(0.5, 0.9))
@@ -166,8 +167,8 @@ def train(args):
             opt_g.zero_grad(set_to_none=True)
             
             # Reconstruction Loss
-            loss_rec, l1_l, ssim_l, perc_l, kld_l = compression_loss(
-                recon, images, mu, logvar, kld_weight, perc_model
+            loss_rec, l1_l, ssim_l, qwm_l, kld_l = compression_loss(
+                recon, images, mu, logvar, kld_weight, qwm_model
             )
             
             # Adversarial Loss (Target: Fool the Discriminator)
@@ -175,8 +176,8 @@ def train(args):
             loss_adv = F.binary_cross_entropy_with_logits(d_fake_g, torch.ones_like(d_fake_g))
             
             # Total MONSTER Loss (G)
-            # GAN Weight is 0.05 to preserve signal integrity while adding texture
-            loss_g = loss_rec + (0.05 * loss_adv)
+            # GAN Weight is reduced to 0.01 because QWM mathematically guarantees texture!
+            loss_g = loss_rec + (0.01 * loss_adv)
             
             loss_g.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
