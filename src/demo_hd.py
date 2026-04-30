@@ -90,8 +90,13 @@ def run_elite_demo(args):
         urllib.request.urlretrieve(url, "master_sample.jpg")
         img = Image.open("master_sample.jpg")
 
+    # 128px Safety Protocol: Enforce minimum 256px to prevent latent collapse
+    safe_size = max(args.size, 256)
+    if args.size < 256:
+        print(f"[!] Safety Net Activated: Upscaling from {args.size}px to 256px.")
+
     transform = transforms.Compose([
-        transforms.Resize((args.size, args.size)),
+        transforms.Resize((safe_size, safe_size)),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
@@ -154,7 +159,9 @@ def run_batch_test(args):
             if os.path.exists(src): img = Image.open(src).convert('RGB')
             else: print(f"[!] {src} not found."); continue
 
-        transform = transforms.Compose([transforms.Resize((size, size)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        # 128px Safety Protocol
+        safe_size = max(size, 256)
+        transform = transforms.Compose([transforms.Resize((safe_size, safe_size)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
         input_tensor = transform(img).unsqueeze(0).to(device)
         with torch.no_grad():
             mu, _ = model.encoder(input_tensor); z_q = model.quantizer(mu); reconstructed = model.decoder(z_q)
