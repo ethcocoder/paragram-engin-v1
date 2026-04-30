@@ -5,6 +5,7 @@ Welcome to the Elite QAU Engine. You are currently operating the **VAE-GAN Quant
 ---
 
 ## Step 1: Initialize the Environment
+git clone --single-branch --branch elite-mode https://github.com/ethcocoder/ai-engin.git
 Ensure your T4 GPU is active and dependencies are installed.
 ```bash
 !pip install psutil torch torchvision matplotlib tqdm
