@@ -34,9 +34,7 @@ log = logging.getLogger(__name__)
 
 
 # ── Quantum Wavelet Matching (QWM) ───────────────────────────────────────────
-# ── Quantum Wavelet Matching (QWM) ───────────────────────────────────────────
 
-class QuantumWaveletLoss(nn.Module):
 class QuantumWaveletLoss(nn.Module):
     """
     Novel FRL (Frequency-Resonance Learning).
@@ -44,9 +42,7 @@ class QuantumWaveletLoss(nn.Module):
     FIXED: Correct channel slicing to prevent color-cross-contamination.
     """
     def __init__(self, channels=3):
-    def __init__(self, channels=3):
         super().__init__()
-        self.wavelet = HaarWaveletTransform(channels)
         self.wavelet = HaarWaveletTransform(channels)
         for param in self.parameters():
             param.requires_grad = False
