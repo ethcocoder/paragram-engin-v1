@@ -171,7 +171,7 @@ def train(args):
             
             # Reconstruction Loss
             loss_rec, l1_l, ssim_l, qwm_l, kld_l = compression_loss(
-                recon, images, mu, logvar, kld_weight, qwm_model
+                recon, images, mu, logvar, kld_weight, qwm_model)
             loss_rec, l1_l, ssim_l, qwm_l, kld_l = compression_loss(
                 recon, images, mu, logvar, kld_weight, qwm_model
             )
