@@ -241,6 +241,14 @@ def stage2_finetune(args):
         avg_psnr = sum(epoch_psnr) / len(epoch_psnr)
         log.info(f"   [S2 Epoch {epoch+1}] Avg PSNR: {avg_psnr:.2f} dB")
 
+        if (epoch + 1) % 5 == 0 or (epoch + 1) == args.epochs:
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'latent_channels':  args.latent_channels,
+                'stage': 2, 'epoch': epoch + 1,
+            }, save_path)
+            log.info("   ✅ Checkpoint saved → %s", save_path)
+
     torch.save({
         'model_state_dict': model.state_dict(),
         'latent_channels':  args.latent_channels,
@@ -369,6 +377,15 @@ def stage3_rl_mistakes(args):
         avg_psnr   = sum(epoch_psnrs)   / len(epoch_psnrs)
         avg_reward = sum(epoch_rewards) / len(epoch_rewards)
         log.info(f"   [S3 Epoch {epoch+1}] Avg PSNR: {avg_psnr:.2f} dB | Avg Reward: {avg_reward:+.3f} | Buffer: {len(mistake_buffer)}")
+
+        if (epoch + 1) % 5 == 0 or (epoch + 1) == args.epochs:
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'latent_channels':  args.latent_channels,
+                'stage': 3, 'epoch': epoch + 1,
+                'final_baseline_psnr': baseline_psnr,
+            }, save_path)
+            log.info("   ✅ Checkpoint saved → %s", save_path)
 
     torch.save({
         'model_state_dict': model.state_dict(),
