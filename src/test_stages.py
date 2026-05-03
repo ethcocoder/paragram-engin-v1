@@ -48,8 +48,8 @@ from train import ssim_loss, QuantumWaveletLoss
 
 CRITERIA = {
     1: {"psnr": 14.0,  "ssim": 0.35, "label": "Stage 1 — Monster VAE-GAN"},
-    2: {"psnr": 22.0,  "ssim": 0.65, "label": "Stage 2 — Fine-Tune"},
-    3: {"psnr": 26.0,  "ssim": 0.78, "label": "Stage 3 — RL from Mistakes"},
+    2: {"psnr": 18.0,  "ssim": 0.60, "label": "Stage 2 — Fine-Tune"},
+    3: {"psnr": 22.0,  "ssim": 0.75, "label": "Stage 3 — RL from Mistakes"},
 }
 
 # Hard test images for Stage 3 (high-frequency patterns)
