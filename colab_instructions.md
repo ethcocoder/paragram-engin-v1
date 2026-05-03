@@ -6,7 +6,7 @@
 
 ## Step 1: Environment Setup
 ```bash
-!git clone --single-branch --branch q-elite https://github.com/ethcocoder/ai-engin.git ai-engin
+!git clone --single-branch --branch last-elite https://github.com/ethcocoder/ai-engin.git ai-engin
 !pip install psutil torch torchvision matplotlib tqdm
 %cd ai-engin
 ```
