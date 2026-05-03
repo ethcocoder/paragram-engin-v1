@@ -14,21 +14,21 @@
 ---
 
 ## ⚡ STANDARD TEST (run this first — always)
-**5 epochs · 5000 samples · batch 12.**
+**10 epochs · 10,000 samples · batch 12.**
 Enough data for real learning. Fast enough to catch problems before full training.
 If a stage **passes** here, the full run will be even better.
 
 ```bash
-# Stage 1 — 5 epochs, 5000 samples
-!python src/train.py --stage 1 --epochs 5 --batch_size 12 --sample_limit 5000
+# Stage 1 — 10 epochs, 10,000 samples
+!python src/train.py --stage 1 --epochs 10 --batch_size 12 --sample_limit 10000
 !python src/test_stages.py --stage 1 --model_path checkpoints/universal_genesis_core.pth
 
-# Stage 2 — 5 epochs, 5000 samples
-!python src/train.py --stage 2 --epochs 5 --batch_size 12 --sample_limit 5000 --resume checkpoints/universal_genesis_core.pth
+# Stage 2 — 10 epochs, 10,000 samples
+!python src/train.py --stage 2 --epochs 10 --batch_size 12 --sample_limit 10000 --resume checkpoints/universal_genesis_core.pth
 !python src/test_stages.py --stage 2 --model_path checkpoints/stage2_genesis_core.pth
 
-# Stage 3 — 5 epochs, 5000 samples
-!python src/train.py --stage 3 --epochs 5 --batch_size 12 --sample_limit 5000 --resume checkpoints/stage2_genesis_core.pth
+# Stage 3 — 10 epochs, 10,000 samples
+!python src/train.py --stage 3 --epochs 10 --batch_size 12 --sample_limit 10000 --resume checkpoints/stage2_genesis_core.pth
 !python src/test_stages.py --stage 3 --model_path checkpoints/stage3_rl_genesis_core.pth
 
 # Full comparison dashboard
@@ -43,15 +43,15 @@ If a stage **passes** here, the full run will be even better.
 
 | Parameter | Standard Test ✅ | Full Elite 🏆 |
 |-----------|-----------------|---------------|
-| `--epochs` S1 | **5** | 100 |
-| `--epochs` S2 | **5** | 30 |
-| `--epochs` S3 | **5** | 20 |
-| `--sample_limit` | **5000** | 10000 |
+| `--epochs` S1 | **10** | 100 |
+| `--epochs` S2 | **10** | 30 |
+| `--epochs` S3 | **10** | 20 |
+| `--sample_limit` | **10000** | 10000 |
 | `--batch_size` | **12** | 12 |
 
 > 💡 **Standard Test** is not a throwaway — it trains real weights on real data.
-> A stage that passes at 5 epochs / 5000 samples will always improve with more.
-> On a **T4 GPU**: Standard Test ≈ 20–30 min total. Full Elite ≈ 3–4 hours.
+> A stage that passes at 10 epochs / 10,000 samples will always improve with more.
+> On a **T4 GPU**: Standard Test ≈ 40–60 min total. Full Elite ≈ 3–4 hours.
 
 ---
 
