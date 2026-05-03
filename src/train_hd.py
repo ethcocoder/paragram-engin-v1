@@ -15,7 +15,7 @@ from pathlib import Path
 
 from hd_data import get_hd_dataloaders
 from model import LatentGenesisCore
-from train import compression_loss, PerceptualLoss
+from train import compression_loss, QuantumWaveletLoss
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
@@ -34,8 +34,8 @@ def train_hd(args):
     # 2. Initialize Model (4-stage HD capable)
     model = LatentGenesisCore(latent_channels=args.latent_channels).to(device)
     
-    # Initialize HD Secret Sauce: Perceptual Loss
-    perc_model = PerceptualLoss().to(device)
+    # Initialize HD Secret Sauce: Quantum Wavelet Matching
+    qwm_model = QuantumWaveletLoss(channels=3).to(device)
     
     # AdamW with weight decay for better edge generalization
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -58,8 +58,8 @@ def train_hd(args):
             outputs, mu, logvar = model(images)
             
             # Use the integrated HD-Ready loss function
-            loss, l1_l, ssim_l, perc_l, kld_l = compression_loss(
-                outputs, images, mu, logvar, kld_weight, perc_model
+            loss, l1_l, ssim_l, qwm_l, kld_l = compression_loss(
+                outputs, images, mu, logvar, kld_weight, qwm_model
             )
             
             loss.backward()
@@ -68,7 +68,7 @@ def train_hd(args):
             running_loss += loss.item()
             
         avg_loss = running_loss / len(loader)
-        log.info(f"Epoch [{epoch+1}/{args.epochs}] -> HD Genesis Error: {avg_loss:.4f} | SSIM: {ssim_l.item():.4f} | PERC: {perc_l.item():.4f}")
+        log.info(f"Epoch [{epoch+1}/{args.epochs}] -> HD Genesis Error: {avg_loss:.4f} | SSIM: {ssim_l.item():.4f} | QWM: {qwm_l.item():.4f}")
 
     log.info("[*] HD Genesis Complete. Saving deployment architecture.")
     torch.save({

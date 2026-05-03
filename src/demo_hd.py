@@ -93,12 +93,7 @@ def run_elite_demo(args):
         urllib.request.urlretrieve(url, "master_sample.jpg")
         img_raw = Image.open("master_sample.jpg")
 
-    # 128px Safety Protocol: Enforce minimum 256px to prevent latent collapse
-    safe_size = max(args.size, 256)
-    if args.size < 256:
-        print(f"[!] Safety Net Activated: Upscaling from {args.size}px to 256px.")
-
-    # 128px Safety Protocol: Enforce minimum 256px to prevent latent collapse
+    # Safety Protocol: Enforce minimum 256px to prevent latent collapse
     safe_size = max(args.size, 256)
     if args.size < 256:
         print(f"[!] Safety Net Activated: Upscaling from {args.size}px to 256px.")
