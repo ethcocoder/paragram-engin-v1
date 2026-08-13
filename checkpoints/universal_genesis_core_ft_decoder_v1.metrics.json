@@ -1,0 +1,127 @@
+{
+  "model_version": "universal-genesis-ft-v1",
+  "created_at_utc": "2026-08-13T19:02:56.567511+00:00",
+  "base_checkpoint": "/content/paragram-engin-v1/checkpoints/universal_genesis_core.pth",
+  "base_checkpoint_sha256": "775d691f8cb739f1fe2c20beb726fabf5f868b7c7deb675e98bdc8dcdc5d506e",
+  "stage": "decoder",
+  "latent_channels": 16,
+  "payload_contract": {
+    "image_height": 256,
+    "image_width": 256,
+    "latent_channels": 16,
+    "latent_height": 16,
+    "latent_width": 16,
+    "quantization_bits": 8,
+    "values_per_image": 4096,
+    "raw_payload_bytes_per_image": 4096
+  },
+  "baseline_metrics": {
+    "samples": 800.0,
+    "mean_psnr_db": 28.195947036743163,
+    "mean_ssim": 0.7750861024856568
+  },
+  "final_metrics": {
+    "samples": 800.0,
+    "mean_psnr_db": 28.822024154663087,
+    "mean_ssim": 0.7883838558197022
+  },
+  "best_epoch": 11,
+  "selected_by": "highest mean deterministic validation PSNR; SSIM breaks PSNR ties",
+  "training_config": {
+    "epochs": 12,
+    "batch_size": 32,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "ssim_weight": 0.5,
+    "perceptual_weight": 0.1,
+    "sample_limit": 30000,
+    "seed": 1337,
+    "validation_batches": 25
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.6644576012071516,
+      "mean_psnr_db": 27.940498275756838,
+      "mean_ssim": 0.7758932685852051,
+      "learning_rate": 9.829629131445342e-05
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.653344941800083,
+      "mean_psnr_db": 28.224913787841796,
+      "mean_ssim": 0.7778057909011841,
+      "learning_rate": 9.330127018922195e-05
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.6504492734922275,
+      "mean_psnr_db": 27.830558319091796,
+      "mean_ssim": 0.764999988079071,
+      "learning_rate": 8.535533905932738e-05
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.6459724333748889,
+      "mean_psnr_db": 28.423105850219727,
+      "mean_ssim": 0.7772241520881653,
+      "learning_rate": 7.500000000000001e-05
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.6418053165300569,
+      "mean_psnr_db": 27.580945587158205,
+      "mean_ssim": 0.7721315288543701,
+      "learning_rate": 6.294095225512605e-05
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.6370570033725137,
+      "mean_psnr_db": 28.363791427612306,
+      "mean_ssim": 0.7808350539207458,
+      "learning_rate": 5.000000000000001e-05
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.632728166798793,
+      "mean_psnr_db": 28.640728530883788,
+      "mean_ssim": 0.7835547232627869,
+      "learning_rate": 3.705904774487398e-05
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.6293035436159512,
+      "mean_psnr_db": 28.566191787719728,
+      "mean_ssim": 0.7855568647384643,
+      "learning_rate": 2.5000000000000018e-05
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.6231810786068313,
+      "mean_psnr_db": 28.77642692565918,
+      "mean_ssim": 0.786966724395752,
+      "learning_rate": 1.4644660940672632e-05
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.6209049329066327,
+      "mean_psnr_db": 28.801250762939453,
+      "mean_ssim": 0.787855281829834,
+      "learning_rate": 6.698729810778067e-06
+    },
+    {
+      "epoch": 11,
+      "train_loss": 0.6185205204845238,
+      "mean_psnr_db": 28.822024154663087,
+      "mean_ssim": 0.7883838558197022,
+      "learning_rate": 1.7037086855465907e-06
+    },
+    {
+      "epoch": 12,
+      "train_loss": 0.615787247128324,
+      "mean_psnr_db": 28.781061553955077,
+      "mean_ssim": 0.7862468671798706,
+      "learning_rate": 0.0
+    }
+  ]
+}
