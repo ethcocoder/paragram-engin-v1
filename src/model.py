@@ -126,18 +126,33 @@ class GenesisDecoder(nn.Module):
     Output shape: (B, 3, H, W) with values in [-1, 1]
     """
 
-    def __init__(self, latent_channels: int = 16) -> None:
+    def __init__(self, latent_channels: int = 16, bottleneck_blocks: int = 4) -> None:
         super().__init__()
-        # Expand latent to rich 256-channel manifold
+        if bottleneck_blocks < 4:
+            raise ValueError("bottleneck_blocks must be at least 4 to load legacy Genesis checkpoints.")
+        self.bottleneck_blocks = bottleneck_blocks
+        # Keep the original six module positions unchanged so all legacy
+        # decoder weights retain their state-dict names and can load directly.
         self.expand = nn.Sequential(
             nn.Conv2d(latent_channels, 256, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
             ResBlock(256),
             ResBlock(256),
-            ResBlock(256),  # Extra capacity for Elite HD
-            ResBlock(256),  # Extra capacity for Elite HD
+            ResBlock(256),  # Legacy Elite HD capacity
+            ResBlock(256),  # Legacy Elite HD capacity
         )
+        # Deep-decoder v2 appends residual reasoning blocks after the legacy
+        # stack.  A zero-gamma final BatchNorm makes every added block start
+        # as an identity transformation, preserving v1 output at initialization
+        # while allowing the block to learn during fine-tuning.
+        extras = []
+        for _ in range(bottleneck_blocks - 4):
+            block = ResBlock(256)
+            nn.init.zeros_(block.conv[4].weight)
+            nn.init.zeros_(block.conv[4].bias)
+            extras.append(block)
+        self.extra_bottleneck = nn.Sequential(*extras) if extras else nn.Identity()
         # 256ch → PixelShuffle(2) → 64ch, spatial ×2
         self.up1 = nn.Sequential(
             nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False),
@@ -174,6 +189,7 @@ class GenesisDecoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.expand(x)
+        x = self.extra_bottleneck(x)
         x = self.up1(x)
         x = self.up2(x)
         x = self.up3(x)
@@ -218,10 +234,12 @@ class LatentGenesisCore(nn.Module):
         Native (32x32x3x4 bytes) vs Compressed (16x16xLatent x 1 byte)
     """
 
-    def __init__(self, latent_channels: int = 16) -> None:
+    def __init__(self, latent_channels: int = 16, decoder_bottleneck_blocks: int = 4) -> None:
         super().__init__()
+        self.latent_channels = latent_channels
+        self.decoder_bottleneck_blocks = decoder_bottleneck_blocks
         self.encoder = SemanticEncoder(latent_channels)
-        self.decoder = GenesisDecoder(latent_channels)
+        self.decoder = GenesisDecoder(latent_channels, bottleneck_blocks=decoder_bottleneck_blocks)
         self.quantizer = SovereignQuantizer() # The 'Compression' gate
         self.qvs = QVS()  # Quantum Engine living inside the Neural Core
 

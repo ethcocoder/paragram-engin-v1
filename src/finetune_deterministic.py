@@ -69,6 +69,45 @@ def load_checkpoint(path: Path, device: torch.device) -> Dict[str, Any]:
     return checkpoint
 
 
+def decoder_bottleneck_blocks_from_checkpoint(checkpoint: Dict[str, Any]) -> int:
+    """Read the decoder-depth contract, treating legacy checkpoints as four blocks."""
+    metadata = checkpoint.get("fine_tuning", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return int(checkpoint.get("decoder_bottleneck_blocks", metadata.get("decoder_bottleneck_blocks", 4)))
+
+
+def load_compatible_weights(
+    model: LatentGenesisCore,
+    checkpoint: Dict[str, Any],
+    source_blocks: int,
+    target_blocks: int,
+) -> None:
+    """Load v1 weights into an equal or deeper decoder without silent mismatch.
+
+    Only parameters belonging to newly appended identity-initialized decoder
+    blocks may be absent.  Any other missing or unexpected weight is treated as
+    a versioning error rather than being silently ignored.
+    """
+    if target_blocks < source_blocks:
+        raise ValueError(
+            f"Cannot load a {source_blocks}-block checkpoint into a shallower "
+            f"{target_blocks}-block decoder."
+        )
+    result = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    allowed_missing_prefix = "decoder.extra_bottleneck."
+    invalid_missing = [key for key in result.missing_keys if not key.startswith(allowed_missing_prefix)]
+    if invalid_missing or result.unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint is not compatible with the requested architecture. "
+            f"Missing: {invalid_missing}; unexpected: {result.unexpected_keys}"
+        )
+    if source_blocks == target_blocks and result.missing_keys:
+        raise RuntimeError(
+            f"Matching-depth checkpoint unexpectedly missed parameters: {result.missing_keys}"
+        )
+
+
 def deterministic_latent(
     model: LatentGenesisCore, images: torch.Tensor
 ) -> torch.Tensor:
@@ -118,24 +157,41 @@ def psnr_from_normalized(reconstruction: torch.Tensor, target: torch.Tensor) -> 
     return 20.0 * torch.log10(1.0 / torch.sqrt(torch.clamp(mse, min=1e-12)))
 
 
+def gradient_detail_loss(reconstruction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Penalize lost horizontal and vertical image detail without changing payload size."""
+    reconstruction_dx = reconstruction[:, :, :, 1:] - reconstruction[:, :, :, :-1]
+    target_dx = target[:, :, :, 1:] - target[:, :, :, :-1]
+    reconstruction_dy = reconstruction[:, :, 1:, :] - reconstruction[:, :, :-1, :]
+    target_dy = target[:, :, 1:, :] - target[:, :, :-1, :]
+    return F.l1_loss(reconstruction_dx, target_dx) + F.l1_loss(reconstruction_dy, target_dy)
+
+
 def reconstruction_loss(
     reconstruction: torch.Tensor,
     target: torch.Tensor,
     perceptual_model: PerceptualLoss | None,
     ssim_weight: float,
     perceptual_weight: float,
+    edge_weight: float,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Use the existing pixel, structural, and perceptual objectives."""
+    """Use pixel, structural, perceptual, and detail-preserving edge objectives."""
     l1_value = F.l1_loss(reconstruction, target)
     ssim_value = ssim_loss(reconstruction, target)
+    edge_value = gradient_detail_loss(reconstruction, target)
     perceptual_value = torch.zeros((), device=target.device)
     if perceptual_model is not None and perceptual_weight > 0:
         perceptual_value = perceptual_model(reconstruction, target)
 
-    total = l1_value + ssim_weight * ssim_value + perceptual_weight * perceptual_value
+    total = (
+        l1_value
+        + ssim_weight * ssim_value
+        + perceptual_weight * perceptual_value
+        + edge_weight * edge_value
+    )
     return total, {
         "l1": float(l1_value.detach().item()),
         "ssim_loss": float(ssim_value.detach().item()),
+        "edge_loss": float(edge_value.detach().item()),
         "perceptual_loss": float(perceptual_value.detach().item()),
         "total": float(total.detach().item()),
     }
@@ -205,6 +261,12 @@ def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
     checkpoint = load_checkpoint(base_path, device)
     checkpoint_latent_channels = int(checkpoint.get("latent_channels", args.latent_channels))
+    checkpoint_decoder_blocks = decoder_bottleneck_blocks_from_checkpoint(checkpoint)
+    if args.decoder_bottleneck_blocks < checkpoint_decoder_blocks:
+        raise ValueError(
+            f"Base checkpoint uses {checkpoint_decoder_blocks} decoder bottleneck blocks, "
+            f"but --decoder_bottleneck_blocks={args.decoder_bottleneck_blocks} was requested."
+        )
     if args.latent_channels is not None and args.latent_channels != checkpoint_latent_channels:
         raise ValueError(
             f"Checkpoint requires {checkpoint_latent_channels} latent channels, "
@@ -212,8 +274,16 @@ def train(args: argparse.Namespace) -> None:
         )
     latent_channels = checkpoint_latent_channels
 
-    model = LatentGenesisCore(latent_channels=latent_channels).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    model = LatentGenesisCore(
+        latent_channels=latent_channels,
+        decoder_bottleneck_blocks=args.decoder_bottleneck_blocks,
+    ).to(device)
+    load_compatible_weights(
+        model,
+        checkpoint,
+        source_blocks=checkpoint_decoder_blocks,
+        target_blocks=args.decoder_bottleneck_blocks,
+    )
     configure_stage(model, args.stage)
 
     trainloader, testloader = get_dataloaders(
@@ -274,6 +344,7 @@ def train(args: argparse.Namespace) -> None:
                 perceptual_model,
                 args.ssim_weight,
                 args.perceptual_weight,
+                args.edge_weight,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=args.grad_clip)
@@ -285,6 +356,7 @@ def train(args: argparse.Namespace) -> None:
                 loss=f"{components['total']:.4f}",
                 l1=f"{components['l1']:.4f}",
                 ssim=f"{components['ssim_loss']:.4f}",
+                edge=f"{components['edge_loss']:.4f}",
             )
 
         scheduler.step()
@@ -332,12 +404,18 @@ def train(args: argparse.Namespace) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
-        "model_version": "universal-genesis-ft-v1",
+        "model_version": (
+            "universal-genesis-deep-decoder-v2"
+            if args.decoder_bottleneck_blocks > 4
+            else "universal-genesis-ft-v1"
+        ),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "base_checkpoint": str(base_path),
         "base_checkpoint_sha256": sha256_file(base_path),
         "stage": args.stage,
         "latent_channels": latent_channels,
+        "decoder_bottleneck_blocks": args.decoder_bottleneck_blocks,
+        "base_decoder_bottleneck_blocks": checkpoint_decoder_blocks,
         "payload_contract": contract,
         "baseline_metrics": base_metrics,
         "final_metrics": final_metrics,
@@ -350,9 +428,11 @@ def train(args: argparse.Namespace) -> None:
             "weight_decay": args.weight_decay,
             "ssim_weight": args.ssim_weight,
             "perceptual_weight": args.perceptual_weight,
+            "edge_weight": args.edge_weight,
             "sample_limit": args.sample_limit,
             "seed": args.seed,
             "validation_batches": args.val_batches,
+            "decoder_bottleneck_blocks": args.decoder_bottleneck_blocks,
         },
         "history": history,
     }
@@ -388,6 +468,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--ssim_weight", type=float, default=0.5)
     parser.add_argument("--perceptual_weight", type=float, default=0.1)
+    parser.add_argument("--edge_weight", type=float, default=0.0, help="Detail-preserving edge-loss weight; use 0.05 for deep-decoder v2 training.")
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--sample_limit", type=int, default=None, help="Optional cap on STL-10 unlabeled training images; omit for all 100,000 images.")
     parser.add_argument("--val_batches", type=int, default=25, help="Fixed number of STL-10 validation batches; 0 evaluates all batches.")
@@ -395,6 +476,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--latent_channels", type=int, default=None, help="Optional safety check; otherwise inferred from checkpoint metadata.")
+    parser.add_argument(
+        "--decoder_bottleneck_blocks",
+        type=int,
+        default=4,
+        help="Total 256-channel decoder bottleneck residual blocks. Use 14 for the approximately 80 MB deep-decoder v2.",
+    )
     return parser.parse_args()
 
 

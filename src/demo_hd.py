@@ -48,11 +48,29 @@ def run_hd_simulation(args):
     log_path = Path(args.model_path).name
     print(f"[*] Paradox Universal Demo: Testing '{log_path}' on {device}")
     
-    # 1. Load Universal Model
-    model = LatentGenesisCore(latent_channels=args.latent_channels).to(device)
-    checkpoint = torch.load(args.model_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # 1. Load Universal Model.  Deep-decoder checkpoints include their
+    # architecture depth; legacy checkpoints default to the original four
+    # bottleneck blocks.
+    checkpoint = torch.load(args.model_path, map_location=device, weights_only=True)
+    metadata = checkpoint.get('fine_tuning', {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    checkpoint_blocks = int(
+        checkpoint.get('decoder_bottleneck_blocks', metadata.get('decoder_bottleneck_blocks', 4))
+    )
+    checkpoint_channels = int(checkpoint.get('latent_channels', args.latent_channels))
+    if checkpoint_channels != args.latent_channels:
+        raise ValueError(
+            f"Checkpoint requires {checkpoint_channels} latent channels, "
+            f"but --latent_channels={args.latent_channels} was requested."
+        )
+    model = LatentGenesisCore(
+        latent_channels=checkpoint_channels,
+        decoder_bottleneck_blocks=checkpoint_blocks,
+    ).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     model.eval()
+    print(f"[*] Decoder bottleneck blocks: {checkpoint_blocks}")
 
     # 2. Fresh Patterns for Generalization Test
     if args.random:

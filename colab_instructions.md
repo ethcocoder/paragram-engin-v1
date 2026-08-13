@@ -1,16 +1,16 @@
-# Paragram Engine — Colab Fine-Tuning Guide
+# Paragram Engine — Deep-Decoder v2 Colab Guide
 
-This guide fine-tunes the existing **Universal Genesis** checkpoint to improve reconstruction quality while retaining its current transmission contract.
+This branch implements **Deep-Decoder v2**, an approximately 80 MB float32 model that increases decoder capacity while keeping the image packet exactly the same.
 
-> **Packet contract preserved:** Each 256 × 256 image is represented by a `16 × 16 × 16` latent map. Each value is 8-bit quantized, so the raw latent payload remains **4,096 values / 4,096 bytes per image** before the transport container, headers, and metadata are added.
+> **Packet contract:** Every 256 × 256 image remains a `16 × 16 × 16` latent map quantized to 8-bit values. The raw latent payload remains **4,096 values / 4,096 bytes per image** before the transport container, headers, and metadata.
 
-The base checkpoint is never overwritten. Every fine-tuning stage writes a separately versioned `.pth` file and a matching `.metrics.json` report.
+The extra capacity is installed at the receiver. It improves how the decoder interprets the packet; it does **not** increase the image payload.
 
 ---
 
-## 1. Set up a GPU runtime
+## 1. Use a T4 GPU runtime
 
-In Google Colab, choose **Runtime → Change runtime type → T4 GPU**, then run:
+In Google Colab, select **Runtime → Change runtime type → T4 GPU**, then confirm it:
 
 ```bash
 !nvidia-smi
@@ -18,202 +18,207 @@ In Google Colab, choose **Runtime → Change runtime type → T4 GPU**, then run
 
 ---
 
-## 2. Clone and install
+## 2. Clone the deep-decoder v2 branch
+
+This must clone the implementation branch, not `main`:
 
 ```bash
-!git clone https://github.com/ethcocoder/paragram-engin-v1.git
+!git clone --branch feature/deep-decoder-80m-v2 --single-branch \
+  https://github.com/ethcocoder/paragram-engin-v1.git
 %cd paragram-engin-v1
 !pip install -r requirements.txt
 ```
 
-The initial perceptual-loss run may download the pre-trained VGG-16 weights and the STL-10 dataset. Allow those downloads to complete before judging the fine-tune.
-
----
-
-## 3. Confirm the base checkpoint
-
-The fine-tuning script refuses to overwrite the base model. Confirm it exists first:
+Confirm the active branch:
 
 ```bash
-!ls -lh checkpoints/universal_genesis_core.pth
-!sha256sum checkpoints/universal_genesis_core.pth
+!git branch --show-current
 ```
 
-The current base checkpoint should have this SHA-256 value:
+Expected output:
 
 ```text
-775d691f8cb739f1fe2c20beb726fabf5f868b7c7deb675e98bdc8dcdc5d506e
+feature/deep-decoder-80m-v2
 ```
 
 ---
 
-## 4. T4 GPU batch-size settings
+## 3. Confirm the v1 base checkpoint and v2 capacity
 
-The decoder-only stage uses less GPU memory because the encoder is frozen. The full-model stage requires more memory because gradients are retained for both encoder and decoder. Start with the recommended values below rather than using the same batch size for both stages.
+The deep decoder bootstraps from the verified v1 model. It will not overwrite it.
 
-| Fine-tuning stage | T4 starting batch size | Optional increase after a stable epoch | Fallback if CUDA runs out of memory |
-|---|---:|---:|---:|
-| Stage 1 — decoder only | **32** | 48 | 24, then 16 |
-| Stage 2 — full model | **24** | 32 | 16 |
+```bash
+!ls -lh checkpoints/universal_genesis_core_ft_decoder_v1.pth
+!sha256sum checkpoints/universal_genesis_core_ft_decoder_v1.pth
+!python src/inspect_model_capacity.py \
+  --checkpoint checkpoints/universal_genesis_core_ft_decoder_v1.pth
+```
 
-The perceptual VGG loss uses substantial activation memory at 256 × 256 resolution. If a CUDA out-of-memory error occurs, restart the Colab runtime, reduce only `--batch_size` to the fallback value, and rerun the command. Do **not** change the latent-channel or quantization settings; those are part of the packet contract.
+The `14 total bottleneck blocks` estimate should be approximately **80 MB float32**. The initial four blocks load from v1; ten new blocks are appended as identity transformations so the starting v2 reconstruction matches v1 before fine-tuning begins.
 
 ---
 
-## 5. Stage 1 — recommended decoder-only fine-tune
+## 4. Train Deep-Decoder v2 — decoder-only stage
 
-This is the safe quality-improvement step. It freezes the encoder and fine-tunes the decoder to reconstruct from the **same deterministic, 8-bit quantized latent** that is used by `demo_hd.py` during transmission.
+This is the required first stage. It freezes the v1 encoder and trains the larger decoder using the same deterministic 8-bit latent path used during image transmission. It uses the complete 100,000-image STL-10 unlabeled set by omitting `--sample_limit`.
 
 ```bash
 !python src/finetune_deterministic.py \
-  --base_checkpoint checkpoints/universal_genesis_core.pth \
-  --output_checkpoint checkpoints/universal_genesis_core_ft_decoder_v1.pth \
+  --base_checkpoint checkpoints/universal_genesis_core_ft_decoder_v1.pth \
+  --output_checkpoint checkpoints/universal_genesis_deep_decoder_80m_v2.pth \
   --stage decoder \
-  --epochs 12 \
-  --batch_size 32 \
+  --decoder_bottleneck_blocks 14 \
+  --epochs 30 \
+  --batch_size 16 \
   --lr 1e-4 \
-  --sample_limit 30000 \
+  --ssim_weight 0.5 \
+  --perceptual_weight 0.1 \
+  --edge_weight 0.05 \
   --val_batches 25
 ```
 
-The script will print the baseline and fine-tuned validation PSNR/SSIM on the same STL-10 validation batches. It saves the best validation epoch rather than blindly saving the final epoch.
+The loss includes pixel accuracy, SSIM, perceptual similarity, and an edge-preservation term. The edge term is intended to improve the fine detail that is soft in the current reconstruction while preserving the structural layout already carried by the latent.
 
-### Stage 1 output files
+### T4 memory fallback
 
-| File | Purpose |
-|---|---|
-| `checkpoints/universal_genesis_core_ft_decoder_v1.pth` | Fine-tuned checkpoint compatible with the existing demo loader |
-| `checkpoints/universal_genesis_core_ft_decoder_v1.metrics.json` | Base-versus-final metrics, payload contract, seed, and training history |
+The 80 MB decoder is substantially larger than v1. If CUDA reports an out-of-memory error, restart the runtime and change only `--batch_size`:
 
----
+| First attempt | First fallback | Second fallback |
+|---:|---:|---:|
+| 16 | 12 | 8 |
 
-## 6. Verified Stage 1 reference result
-
-A completed T4 Colab run using the Stage 1 command above trained on 30,000 STL-10 images with batch size 32 and selected **epoch 11** as the best deterministic validation checkpoint. The uploaded checkpoint has SHA-256:
-
-```text
-46819d3f77499bd7e479b0cf49c17491d93ea9659f06b875d4dd5c7b1720c0c0
-```
-
-| Metric on the same 800 held-out validation images | Base checkpoint | Fine-tuned decoder checkpoint | Change |
-|---|---:|---:|---:|
-| Mean PSNR | 28.1959 dB | **28.8220 dB** | **+0.6261 dB** |
-| Mean SSIM | 0.7751 | **0.7884** | **+0.0133** |
-| Raw latent payload per image | 4,096 bytes | **4,096 bytes** | Unchanged |
-
-The uploaded fine-tuned checkpoint also loaded successfully in the existing fresh-image demo and produced a **48.0×** latent reduction with **26.91 dB** average PSNR on four new random images. That fresh-image score confirms compatibility, but it must not be directly compared with any earlier random-image score because the source images differ.
+Do **not** change `--decoder_bottleneck_blocks`, `--latent_channels`, or quantization settings. Those define the model and packet contract.
 
 ---
 
-## 7. Inspect the validation report
+## 5. Inspect the controlled validation result
 
 ```bash
-!cat checkpoints/universal_genesis_core_ft_decoder_v1.metrics.json
+!cat checkpoints/universal_genesis_deep_decoder_80m_v2.metrics.json
 ```
 
-Use the values in `baseline_metrics` and `final_metrics` to decide whether to keep the checkpoint.
+Keep the v2 model only if it meets all gates below on the same held-out validation images.
 
-| Gate | Keep the Stage 1 checkpoint only if… |
+| Gate | Required result |
 |---|---|
-| Payload | `raw_payload_bytes_per_image` remains `4096` |
-| Quality | `final_metrics.mean_psnr_db` is higher than the baseline on the same validation set |
+| Model size | `decoder_bottleneck_blocks` is `14` |
+| Packet contract | `raw_payload_bytes_per_image` remains `4096` |
+| Visual fidelity | `final_metrics.mean_psnr_db` exceeds the v1 baseline for the same run |
 | Structure | `final_metrics.mean_ssim` does not fall materially below the baseline |
-| Compatibility | The existing demo loads the new checkpoint without an error |
+| Detail objective | `training_config.edge_weight` is `0.05` |
+| Version safety | A new v2 checkpoint is written; v1 remains untouched |
 
-> Do not compare PSNR values from unrelated random samples. The script's base-versus-final validation values are the meaningful quality comparison because they use the same held-out images.
+> The script saves the best validation epoch by deterministic PSNR, not merely the final epoch.
 
 ---
 
-## 8. Test the fine-tuned checkpoint on fresh images
+## 6. Verify v2 on ten fresh random images
 
-Run the existing packet-decoding demo with the new checkpoint:
+The verifier downloads ten new images, checks the latent shape and payload size, reports individual and aggregate PSNR, and writes a comparison image plus JSON report.
+
+```bash
+!python src/verify_random_checkpoint.py \
+  --model_path checkpoints/universal_genesis_deep_decoder_80m_v2.pth \
+  --latent_channels 16 \
+  --num_images 10 \
+  --image_dir verification_random_images_v2 \
+  --output_image deep_decoder_v2_ten_image_verification.png \
+  --report_path deep_decoder_v2_ten_image_verification.json
+```
+
+Display the comparison artifact:
+
+```python
+from IPython.display import Image, display
+display(Image(filename="deep_decoder_v2_ten_image_verification.png"))
+```
+
+The verification must report:
+
+```text
+Latent packet: 16x16x16 @ 8-bit = 4096 raw bytes/image
+Reduction factor: 48.0X
+Images tested: 10
+```
+
+A ten-image random run verifies that the checkpoint loads and works end-to-end. Do not use it as a before/after quality comparison unless v1 and v2 are evaluated on the same fixed images.
+
+---
+
+## 7. Optional Stage 2 — full-model fine-tuning
+
+Run this only after Stage 1 passes the validation gates. It unfreezes the encoder and decoder at a low learning rate, while retaining the identical 4 KB packet contract.
+
+```bash
+!python src/finetune_deterministic.py \
+  --base_checkpoint checkpoints/universal_genesis_deep_decoder_80m_v2.pth \
+  --output_checkpoint checkpoints/universal_genesis_deep_decoder_80m_v2_full.pth \
+  --stage full \
+  --decoder_bottleneck_blocks 14 \
+  --epochs 10 \
+  --batch_size 8 \
+  --lr 2e-5 \
+  --ssim_weight 0.5 \
+  --perceptual_weight 0.1 \
+  --edge_weight 0.05 \
+  --val_batches 25
+```
+
+Then repeat the ten-image verification using `universal_genesis_deep_decoder_80m_v2_full.pth`.
+
+---
+
+## 8. Download the v2 model and evidence
+
+```python
+from google.colab import files
+
+files.download("checkpoints/universal_genesis_deep_decoder_80m_v2.pth")
+files.download("checkpoints/universal_genesis_deep_decoder_80m_v2.metrics.json")
+files.download("deep_decoder_v2_ten_image_verification.png")
+files.download("deep_decoder_v2_ten_image_verification.json")
+```
+
+If you completed Stage 2, replace the two checkpoint paths with the `_full.pth` checkpoint and its matching metrics file.
+
+---
+
+## 9. Deployment and rollback
+
+Each receiver must use the exact checkpoint version encoded in the message header. Use a distinct model identifier such as:
+
+```text
+model_id: genesis-deep-decoder-80m-v2
+latent_shape: [16, 16, 16]
+dtype: int8
+quantization_scale: 1 / 127.5
+payload_version: 1
+```
+
+The v2 model accepts the same latent shape as v1, but it is a separately versioned decoder. For predictable behavior, distribute the same complete checkpoint to both sender and receiver.
+
+Rollback requires no retraining. Return to the published v1 checkpoint:
 
 ```bash
 !python src/demo_hd.py \
   --model_path checkpoints/universal_genesis_core_ft_decoder_v1.pth \
   --latent_channels 16 \
-  --random
-```
-
-This downloads four fresh images, encodes their means, quantizes each latent to 8-bit values, reconstructs them, and writes:
-
-```text
-universal_hd_result.png
-```
-
-Display the result in Colab:
-
-```python
-from IPython.display import Image, display
-display(Image(filename="universal_hd_result.png"))
+  --image_dir test_local
 ```
 
 ---
 
-## 9. Optional Stage 2 — full-model fine-tune
+## What Deep-Decoder v2 changes—and what it does not
 
-Run this **only if Stage 1 improves quality but still leaves substantial blur**. Stage 2 adjusts both encoder and decoder while retaining the identical `16 × 16 × 16`, 8-bit latent contract. It uses a lower learning rate because changing the encoder is less conservative.
+| Item | v1 decoder | Deep-Decoder v2 |
+|---|---:|---:|
+| Decoder bottleneck residual blocks | 4 | **14** |
+| Full-model float32 capacity | 32.91 MB | **approximately 80.14 MB** |
+| Latent channels | 16 | 16 |
+| Latent spatial size | 16 × 16 | 16 × 16 |
+| Quantization | 8-bit `[-1, 1]` | 8-bit `[-1, 1]` |
+| Raw latent payload | 4,096 bytes | 4,096 bytes |
+| Fine-detail objective | None | Edge-preservation loss enabled |
+| Original v1 checkpoint | Preserved | Preserved for rollback |
 
-```bash
-!python src/finetune_deterministic.py \
-  --base_checkpoint checkpoints/universal_genesis_core_ft_decoder_v1.pth \
-  --output_checkpoint checkpoints/universal_genesis_core_ft_v1.pth \
-  --stage full \
-  --epochs 8 \
-  --batch_size 24 \
-  --lr 2e-5 \
-  --sample_limit 30000 \
-  --val_batches 25
-```
-
-Then evaluate it through the same demo command:
-
-```bash
-!python src/demo_hd.py \
-  --model_path checkpoints/universal_genesis_core_ft_v1.pth \
-  --latent_channels 16 \
-  --random
-```
-
----
-
-## 10. Deployment requirement
-
-A receiver must use the **same checkpoint version** that was used by the sender. The image packet retains the same shape and raw payload size, but the learned meaning of those 4,096 values changes as the encoder and/or decoder is fine-tuned.
-
-For the decoder-only Stage 1 checkpoint, distribute the new decoder checkpoint to the receiver. For the full Stage 2 checkpoint, distribute the **same complete new checkpoint to both sender and receiver**.
-
-```bash
-# Example: retain the original model and distribute a versioned fine-tuned model.
-!cp checkpoints/universal_genesis_core_ft_v1.pth peer_sender/
-!cp checkpoints/universal_genesis_core_ft_v1.pth peer_receiver/
-```
-
----
-
-## 11. Rollback
-
-Rollback does not require retraining. Use the untouched original checkpoint:
-
-```bash
-!python src/demo_hd.py \
-  --model_path checkpoints/universal_genesis_core.pth \
-  --latent_channels 16 \
-  --random
-```
-
----
-
-## What this workflow changes—and what it does not
-
-| Item | Result |
-|---|---|
-| Latent channels | Unchanged: 16 |
-| Latent spatial size for 256 × 256 input | Unchanged: 16 × 16 |
-| Quantization | Unchanged: 8-bit `[-1, 1]` quantization |
-| Raw latent payload | Unchanged: 4,096 bytes per image before container overhead |
-| Fine-tuned weights | Updated in new, versioned checkpoints only |
-| Original checkpoint | Preserved for rollback |
-| Reported quality | Measured against the same held-out validation set before and after fine-tuning |
-
-The result is a controlled test of whether the same low-bandwidth image representation can produce visibly sharper, more structurally faithful reconstructions.
+The v2 branch therefore explores a more capable receiver-side reconstruction model without increasing the cost of each transmitted image.
