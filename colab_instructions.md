@@ -47,7 +47,20 @@ The current base checkpoint should have this SHA-256 value:
 
 ---
 
-## 4. Stage 1 — recommended decoder-only fine-tune
+## 4. T4 GPU batch-size settings
+
+The decoder-only stage uses less GPU memory because the encoder is frozen. The full-model stage requires more memory because gradients are retained for both encoder and decoder. Start with the recommended values below rather than using the same batch size for both stages.
+
+| Fine-tuning stage | T4 starting batch size | Optional increase after a stable epoch | Fallback if CUDA runs out of memory |
+|---|---:|---:|---:|
+| Stage 1 — decoder only | **32** | 48 | 24, then 16 |
+| Stage 2 — full model | **24** | 32 | 16 |
+
+The perceptual VGG loss uses substantial activation memory at 256 × 256 resolution. If a CUDA out-of-memory error occurs, restart the Colab runtime, reduce only `--batch_size` to the fallback value, and rerun the command. Do **not** change the latent-channel or quantization settings; those are part of the packet contract.
+
+---
+
+## 5. Stage 1 — recommended decoder-only fine-tune
 
 This is the safe quality-improvement step. It freezes the encoder and fine-tunes the decoder to reconstruct from the **same deterministic, 8-bit quantized latent** that is used by `demo_hd.py` during transmission.
 
@@ -57,7 +70,7 @@ This is the safe quality-improvement step. It freezes the encoder and fine-tunes
   --output_checkpoint checkpoints/universal_genesis_core_ft_decoder_v1.pth \
   --stage decoder \
   --epochs 12 \
-  --batch_size 16 \
+  --batch_size 32 \
   --lr 1e-4 \
   --sample_limit 30000 \
   --val_batches 25
@@ -74,7 +87,7 @@ The script will print the baseline and fine-tuned validation PSNR/SSIM on the sa
 
 ---
 
-## 5. Inspect the validation report
+## 6. Inspect the validation report
 
 ```bash
 !cat checkpoints/universal_genesis_core_ft_decoder_v1.metrics.json
@@ -93,7 +106,7 @@ Use the values in `baseline_metrics` and `final_metrics` to decide whether to ke
 
 ---
 
-## 6. Test the fine-tuned checkpoint on fresh images
+## 7. Test the fine-tuned checkpoint on fresh images
 
 Run the existing packet-decoding demo with the new checkpoint:
 
@@ -119,7 +132,7 @@ display(Image(filename="universal_hd_result.png"))
 
 ---
 
-## 7. Optional Stage 2 — full-model fine-tune
+## 8. Optional Stage 2 — full-model fine-tune
 
 Run this **only if Stage 1 improves quality but still leaves substantial blur**. Stage 2 adjusts both encoder and decoder while retaining the identical `16 × 16 × 16`, 8-bit latent contract. It uses a lower learning rate because changing the encoder is less conservative.
 
@@ -129,7 +142,7 @@ Run this **only if Stage 1 improves quality but still leaves substantial blur**.
   --output_checkpoint checkpoints/universal_genesis_core_ft_v1.pth \
   --stage full \
   --epochs 8 \
-  --batch_size 16 \
+  --batch_size 24 \
   --lr 2e-5 \
   --sample_limit 30000 \
   --val_batches 25
@@ -146,7 +159,7 @@ Then evaluate it through the same demo command:
 
 ---
 
-## 8. Deployment requirement
+## 9. Deployment requirement
 
 A receiver must use the **same checkpoint version** that was used by the sender. The image packet retains the same shape and raw payload size, but the learned meaning of those 4,096 values changes as the encoder and/or decoder is fine-tuned.
 
@@ -160,7 +173,7 @@ For the decoder-only Stage 1 checkpoint, distribute the new decoder checkpoint t
 
 ---
 
-## 9. Rollback
+## 10. Rollback
 
 Rollback does not require retraining. Use the untouched original checkpoint:
 
