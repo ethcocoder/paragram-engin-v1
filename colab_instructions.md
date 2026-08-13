@@ -87,7 +87,25 @@ The script will print the baseline and fine-tuned validation PSNR/SSIM on the sa
 
 ---
 
-## 6. Inspect the validation report
+## 6. Verified Stage 1 reference result
+
+A completed T4 Colab run using the Stage 1 command above trained on 30,000 STL-10 images with batch size 32 and selected **epoch 11** as the best deterministic validation checkpoint. The uploaded checkpoint has SHA-256:
+
+```text
+46819d3f77499bd7e479b0cf49c17491d93ea9659f06b875d4dd5c7b1720c0c0
+```
+
+| Metric on the same 800 held-out validation images | Base checkpoint | Fine-tuned decoder checkpoint | Change |
+|---|---:|---:|---:|
+| Mean PSNR | 28.1959 dB | **28.8220 dB** | **+0.6261 dB** |
+| Mean SSIM | 0.7751 | **0.7884** | **+0.0133** |
+| Raw latent payload per image | 4,096 bytes | **4,096 bytes** | Unchanged |
+
+The uploaded fine-tuned checkpoint also loaded successfully in the existing fresh-image demo and produced a **48.0×** latent reduction with **26.91 dB** average PSNR on four new random images. That fresh-image score confirms compatibility, but it must not be directly compared with any earlier random-image score because the source images differ.
+
+---
+
+## 7. Inspect the validation report
 
 ```bash
 !cat checkpoints/universal_genesis_core_ft_decoder_v1.metrics.json
@@ -106,7 +124,7 @@ Use the values in `baseline_metrics` and `final_metrics` to decide whether to ke
 
 ---
 
-## 7. Test the fine-tuned checkpoint on fresh images
+## 8. Test the fine-tuned checkpoint on fresh images
 
 Run the existing packet-decoding demo with the new checkpoint:
 
@@ -132,7 +150,7 @@ display(Image(filename="universal_hd_result.png"))
 
 ---
 
-## 8. Optional Stage 2 — full-model fine-tune
+## 9. Optional Stage 2 — full-model fine-tune
 
 Run this **only if Stage 1 improves quality but still leaves substantial blur**. Stage 2 adjusts both encoder and decoder while retaining the identical `16 × 16 × 16`, 8-bit latent contract. It uses a lower learning rate because changing the encoder is less conservative.
 
@@ -159,7 +177,7 @@ Then evaluate it through the same demo command:
 
 ---
 
-## 9. Deployment requirement
+## 10. Deployment requirement
 
 A receiver must use the **same checkpoint version** that was used by the sender. The image packet retains the same shape and raw payload size, but the learned meaning of those 4,096 values changes as the encoder and/or decoder is fine-tuned.
 
@@ -173,7 +191,7 @@ For the decoder-only Stage 1 checkpoint, distribute the new decoder checkpoint t
 
 ---
 
-## 10. Rollback
+## 11. Rollback
 
 Rollback does not require retraining. Use the untouched original checkpoint:
 
