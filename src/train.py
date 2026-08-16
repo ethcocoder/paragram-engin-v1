@@ -22,6 +22,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.models as models
+
+_SSIM_WINDOW_CACHE = {}
 from tqdm import tqdm
 
 from data import get_dataloaders
@@ -74,7 +76,12 @@ def _gaussian_window(size: int = 11, sigma: float = 1.5) -> torch.Tensor:
 
 def ssim_loss(x, y, window_size: int = 11):
     C_ch = x.shape[1]
-    window = _gaussian_window(window_size).to(x.device).expand(C_ch, 1, window_size, window_size).contiguous()
+    cache_key = (x.device.type, x.device.index, str(x.dtype), C_ch, window_size)
+    window = _SSIM_WINDOW_CACHE.get(cache_key)
+    if window is None:
+        window = _gaussian_window(window_size).to(device=x.device, dtype=x.dtype)
+        window = window.expand(C_ch, 1, window_size, window_size).contiguous()
+        _SSIM_WINDOW_CACHE[cache_key] = window
     pad = window_size // 2
 
     mu_x = F.conv2d(x, window, padding=pad, groups=C_ch)

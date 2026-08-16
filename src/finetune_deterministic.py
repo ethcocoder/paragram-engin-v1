@@ -248,6 +248,10 @@ def configure_stage(model: LatentGenesisCore, stage: str) -> None:
 
 def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = device.type == "cuda" and not args.disable_amp
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
     base_path = Path(args.base_checkpoint).expanduser().resolve()
     output_path = Path(args.output_checkpoint).expanduser().resolve()
 
@@ -312,6 +316,7 @@ def train(args: argparse.Namespace) -> None:
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = optim.AdamW(trainable_parameters, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     history = []
     best_state_dict = copy.deepcopy(model.state_dict())
@@ -332,23 +337,26 @@ def train(args: argparse.Namespace) -> None:
             images = images.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
 
-            if args.stage == "decoder":
-                with torch.no_grad():
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+                if args.stage == "decoder":
+                    with torch.no_grad():
+                        latent = deterministic_latent(model, images)
+                else:
                     latent = deterministic_latent(model, images)
-            else:
-                latent = deterministic_latent(model, images)
-            reconstruction = model.decoder(latent)
-            loss, components = reconstruction_loss(
-                reconstruction,
-                images,
-                perceptual_model,
-                args.ssim_weight,
-                args.perceptual_weight,
-                args.edge_weight,
-            )
-            loss.backward()
+                reconstruction = model.decoder(latent)
+                loss, components = reconstruction_loss(
+                    reconstruction,
+                    images,
+                    perceptual_model,
+                    args.ssim_weight,
+                    args.perceptual_weight,
+                    args.edge_weight,
+                )
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=args.grad_clip)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_total += components["total"]
             batch_count += 1
@@ -433,6 +441,7 @@ def train(args: argparse.Namespace) -> None:
             "seed": args.seed,
             "validation_batches": args.val_batches,
             "decoder_bottleneck_blocks": args.decoder_bottleneck_blocks,
+            "mixed_precision_amp": use_amp,
         },
         "history": history,
     }
@@ -473,7 +482,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample_limit", type=int, default=None, help="Optional cap on STL-10 unlabeled training images; omit for all 100,000 images.")
     parser.add_argument("--val_batches", type=int, default=25, help="Fixed number of STL-10 validation batches; 0 evaluates all batches.")
     parser.add_argument("--data_root", default="./data")
-    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--disable_amp", action="store_true", help="Disable CUDA mixed precision; slower on T4 but useful for debugging.")
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--latent_channels", type=int, default=None, help="Optional safety check; otherwise inferred from checkpoint metadata.")
     parser.add_argument(
