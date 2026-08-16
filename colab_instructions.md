@@ -60,7 +60,7 @@ The `14 total bottleneck blocks` estimate should be approximately **80 MB float3
 
 ## 4. Train Deep-Decoder v2 — decoder-only stage
 
-This is the required first stage. It freezes the v1 encoder and trains the larger decoder using the same deterministic 8-bit latent path used during image transmission. It uses the complete 100,000-image STL-10 unlabeled set by omitting `--sample_limit`.
+This is the required first stage. It freezes the v1 encoder and trains the larger decoder using the same deterministic 8-bit latent path used during image transmission. It uses the complete 100,000-image STL-10 unlabeled set by omitting `--sample_limit`. The default experiment is now **5 epochs**, with a validation test and recovery checkpoint after every epoch. The script automatically stops after two stale epochs when validation quality stops improving.
 
 ```bash
 !python src/finetune_deterministic.py \
@@ -68,8 +68,10 @@ This is the required first stage. It freezes the v1 encoder and trains the large
   --output_checkpoint checkpoints/universal_genesis_deep_decoder_80m_v2.pth \
   --stage decoder \
   --decoder_bottleneck_blocks 14 \
-  --epochs 30 \
-  --batch_size 16 \
+  --epochs 5 \
+  --batch_size 32 \
+  --early_stop_patience 2 \
+  --min_psnr_delta 0.02 \
   --lr 1e-4 \
   --ssim_weight 0.5 \
   --perceptual_weight 0.1 \
@@ -79,13 +81,25 @@ This is the required first stage. It freezes the v1 encoder and trains the large
 
 The loss includes pixel accuracy, SSIM, perceptual similarity, and an edge-preservation term. The edge term is intended to improve the fine detail that is soft in the current reconstruction while preserving the structural layout already carried by the latent.
 
+### Per-epoch safety checks
+
+At the end of every epoch, the script evaluates deterministic packet reconstruction on the fixed validation subset and prints PSNR, SSIM, payload bytes, and the number of stale epochs. It also writes these recovery artifacts:
+
+```text
+checkpoints/universal_genesis_deep_decoder_80m_v2.latest.pth
+checkpoints/universal_genesis_deep_decoder_80m_v2.best.pth
+checkpoints/universal_genesis_deep_decoder_80m_v2.progress.json
+```
+
+The `.best.pth` file contains the best validation model seen so far, `.latest.pth` contains the latest completed epoch, and `.progress.json` can be read while training is still running. This means a long run produces useful evidence after epoch 1 instead of requiring the entire experiment to finish.
+
 ### T4 memory fallback
 
-The 80 MB decoder is substantially larger than v1. If CUDA reports an out-of-memory error, restart the runtime and change only `--batch_size`:
+The 80 MB decoder is substantially larger than v1. AMP is enabled automatically for the T4. If CUDA reports an out-of-memory error, restart the runtime and change only `--batch_size`:
 
 | First attempt | First fallback | Second fallback |
 |---:|---:|---:|
-| 16 | 12 | 8 |
+| 32 | 24 | 16 |
 
 Do **not** change `--decoder_bottleneck_blocks`, `--latent_channels`, or quantization settings. Those define the model and packet contract.
 
@@ -108,7 +122,7 @@ Keep the v2 model only if it meets all gates below on the same held-out validati
 | Detail objective | `training_config.edge_weight` is `0.05` |
 | Version safety | A new v2 checkpoint is written; v1 remains untouched |
 
-> The script saves the best validation epoch by deterministic PSNR, not merely the final epoch.
+> The script saves the best validation epoch by deterministic PSNR, not merely the final epoch. Five epochs is a useful first experiment; continue beyond five only if the progress report shows that PSNR/SSIM are still improving.
 
 ---
 
@@ -174,6 +188,8 @@ Then repeat the ten-image verification using `universal_genesis_deep_decoder_80m
 from google.colab import files
 
 files.download("checkpoints/universal_genesis_deep_decoder_80m_v2.pth")
+files.download("checkpoints/universal_genesis_deep_decoder_80m_v2.best.pth")
+files.download("checkpoints/universal_genesis_deep_decoder_80m_v2.progress.json")
 files.download("checkpoints/universal_genesis_deep_decoder_80m_v2.metrics.json")
 files.download("deep_decoder_v2_ten_image_verification.png")
 files.download("deep_decoder_v2_ten_image_verification.json")

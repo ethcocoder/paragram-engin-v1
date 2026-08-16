@@ -261,7 +261,12 @@ def train(args: argparse.Namespace) -> None:
         raise ValueError("Output checkpoint must differ from the base checkpoint to protect rollback.")
     if args.epochs < 1:
         raise ValueError("--epochs must be at least 1.")
+    if args.early_stop_patience < 0:
+        raise ValueError("--early_stop_patience cannot be negative.")
+    if args.min_psnr_delta < 0:
+        raise ValueError("--min_psnr_delta cannot be negative.")
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     set_seed(args.seed)
     checkpoint = load_checkpoint(base_path, device)
     checkpoint_latent_channels = int(checkpoint.get("latent_channels", args.latent_channels))
@@ -322,6 +327,10 @@ def train(args: argparse.Namespace) -> None:
     best_state_dict = copy.deepcopy(model.state_dict())
     best_metrics = dict(base_metrics)
     best_epoch = 0
+    stale_epochs = 0
+    latest_path = output_path.with_name(f"{output_path.stem}.latest.pth")
+    best_path = output_path.with_name(f"{output_path.stem}.best.pth")
+    progress_path = output_path.with_name(f"{output_path.stem}.progress.json")
     for epoch in range(1, args.epochs + 1):
         model.train()
         if args.stage == "decoder":
@@ -381,26 +390,83 @@ def train(args: argparse.Namespace) -> None:
             "learning_rate": optimizer.param_groups[0]["lr"],
         }
         history.append(epoch_record)
-        is_better = (
-            val_metrics["mean_psnr_db"] > best_metrics["mean_psnr_db"]
-            or (
-                val_metrics["mean_psnr_db"] == best_metrics["mean_psnr_db"]
-                and val_metrics["mean_ssim"] > best_metrics["mean_ssim"]
-            )
+        psnr_gain = val_metrics["mean_psnr_db"] - best_metrics["mean_psnr_db"]
+        ssim_gain = val_metrics["mean_ssim"] - best_metrics["mean_ssim"]
+        is_better = psnr_gain > args.min_psnr_delta or (
+            abs(psnr_gain) <= args.min_psnr_delta and ssim_gain > 0.001
         )
         if is_better:
             best_state_dict = copy.deepcopy(model.state_dict())
             best_metrics = dict(val_metrics)
             best_epoch = epoch
+            stale_epochs = 0
             log.info("[*] New best deterministic validation checkpoint at epoch %d.", epoch)
+            torch.save(
+                {
+                    "model_state_dict": best_state_dict,
+                    "latent_channels": latent_channels,
+                    "decoder_bottleneck_blocks": args.decoder_bottleneck_blocks,
+                    "fine_tuning": {
+                        "model_version": "universal-genesis-deep-decoder-v2",
+                        "epoch": epoch,
+                        "payload_contract": contract,
+                        "validation_metrics": val_metrics,
+                        "base_checkpoint_sha256": sha256_file(base_path),
+                    },
+                },
+                best_path,
+            )
+        else:
+            stale_epochs += 1
+
+        # Always preserve the latest weights and a machine-readable progress report.
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "latent_channels": latent_channels,
+                "decoder_bottleneck_blocks": args.decoder_bottleneck_blocks,
+                "fine_tuning": {
+                    "model_version": "universal-genesis-deep-decoder-v2",
+                    "epoch": epoch,
+                    "payload_contract": contract,
+                    "validation_metrics": val_metrics,
+                    "base_checkpoint_sha256": sha256_file(base_path),
+                },
+            },
+            latest_path,
+        )
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "baseline_metrics": base_metrics,
+                    "latest_epoch": epoch,
+                    "best_epoch": best_epoch,
+                    "best_metrics": best_metrics,
+                    "stale_epochs": stale_epochs,
+                    "payload_contract": contract,
+                    "history": history,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         log.info(
-            "[*] Epoch %d/%d | train loss %.5f | PSNR %.2f dB | SSIM %.4f",
+            "[*] Epoch %d/%d | train loss %.5f | PSNR %.2f dB (%+.2f) | SSIM %.4f (%+.4f) | payload %d bytes | stale %d/%d",
             epoch,
             args.epochs,
             epoch_record["train_loss"],
             epoch_record["mean_psnr_db"],
+            val_metrics["mean_psnr_db"] - base_metrics["mean_psnr_db"],
             epoch_record["mean_ssim"],
+            val_metrics["mean_ssim"] - base_metrics["mean_ssim"],
+            contract["raw_payload_bytes_per_image"],
+            stale_epochs,
+            args.early_stop_patience,
         )
+        if args.early_stop_patience > 0 and stale_epochs >= args.early_stop_patience:
+            log.info("[*] Early stopping after %d stale epochs; best epoch was %d.", stale_epochs, best_epoch)
+            break
 
     # Save the best deterministic validation state, not merely the final epoch.
     model.load_state_dict(best_state_dict, strict=True)
@@ -431,6 +497,10 @@ def train(args: argparse.Namespace) -> None:
         "selected_by": "highest mean deterministic validation PSNR; SSIM breaks PSNR ties",
         "training_config": {
             "epochs": args.epochs,
+            "epochs_completed": len(history),
+            "early_stopped": len(history) < args.epochs,
+            "early_stop_patience": args.early_stop_patience,
+            "min_psnr_delta": args.min_psnr_delta,
             "batch_size": args.batch_size,
             "learning_rate": args.lr,
             "weight_decay": args.weight_decay,
@@ -481,6 +551,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--sample_limit", type=int, default=None, help="Optional cap on STL-10 unlabeled training images; omit for all 100,000 images.")
     parser.add_argument("--val_batches", type=int, default=25, help="Fixed number of STL-10 validation batches; 0 evaluates all batches.")
+    parser.add_argument("--early_stop_patience", type=int, default=2, help="Stop after this many epochs without meaningful validation improvement; 0 disables early stopping.")
+    parser.add_argument("--min_psnr_delta", type=float, default=0.02, help="Minimum PSNR gain in dB to count as meaningful improvement.")
     parser.add_argument("--data_root", default="./data")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--disable_amp", action="store_true", help="Disable CUDA mixed precision; slower on T4 but useful for debugging.")
